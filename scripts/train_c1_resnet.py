@@ -60,6 +60,29 @@ def _build_class_to_idx(split_csv: Path) -> dict:
     return {label: i for i, label in enumerate(sorted(labels))}
 
 
+class _SubsetWrapper:
+    """Picklable wrapper over MatadorC1Dataset for a specific split."""
+
+    def __init__(self, base_ds, split_rows, class_to_idx, transform, sample_id_to_idx):
+        self.base_ds = base_ds
+        self.rows = split_rows
+        self.class_to_idx = class_to_idx
+        self.transform = transform
+        self.sample_id_to_idx = sample_id_to_idx
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, idx):
+        row = self.rows[idx]
+        base_idx = self.sample_id_to_idx[row["sample_id"]]
+        sample = self.base_ds[base_idx]
+        if self.transform:
+            sample["image"] = self.transform(sample["image"])
+        sample["target"] = torch.tensor(self.class_to_idx[sample["c1_label"]], dtype=torch.long)
+        return sample
+
+
 def _build_subset_dataset(split_csv: Path, class_to_idx: dict, config: dict):
     # We need to filter the manifest to only rows in the split.
     # The split CSVs are derived from manifest and contain all columns.
@@ -69,45 +92,33 @@ def _build_subset_dataset(split_csv: Path, class_to_idx: dict, config: dict):
         for r in csv.DictReader(f):
             rows.append(r)
 
-    # Minimal wrapper that reads from extracted root or tar.
-    # We'll reuse MatadorC1Dataset but override __len__/__getitem__.
-    # Simpler: create a small wrapper class.
+    # Prefer extracted_root over appearance_tar when present
+    extracted_root = config.get("extracted_root")
+    appearance_tar = config.get("appearance_tar")
+    if extracted_root:
+        appearance_tar = None
+    else:
+        extracted_root = None
     base_ds = MatadorC1Dataset(
         manifest_csv=config["manifest_csv"],
         taxonomy_json=config["taxonomy_json"],
-        appearance_tar=config.get("appearance_tar") or None,
-        extracted_root=config.get("extracted_root") or None,
+        appearance_tar=appearance_tar or None,
+        extracted_root=extracted_root or None,
         transform=None,
     )
 
     # Build index from sample_id to base dataset index
     sample_id_to_idx = {base_ds.samples[i]["sample_id"]: i for i in range(len(base_ds))}
 
-    class SubsetWrapper:
-        def __init__(self, base_ds, split_rows, class_to_idx, transform):
-            self.base_ds = base_ds
-            self.rows = split_rows
-            self.class_to_idx = class_to_idx
-            self.transform = transform
-
-        def __len__(self):
-            return len(self.rows)
-
-        def __getitem__(self, idx):
-            row = self.rows[idx]
-            base_idx = sample_id_to_idx[row["sample_id"]]
-            sample = self.base_ds[base_idx]
-            if self.transform:
-                sample["image"] = self.transform(sample["image"])
-            # Replace target with flat class index
-            sample["target"] = torch.tensor(self.class_to_idx[sample["c1_label"]], dtype=torch.long)
-            return sample
-
-    return SubsetWrapper(base_ds, rows, class_to_idx, _build_transform(
-        config["training"]["image_size"],
-        config["data"]["mean"],
-        config["data"]["std"],
-    ))
+    return _SubsetWrapper(
+        base_ds, rows, class_to_idx,
+        _build_transform(
+            config["training"]["image_size"],
+            config["data"]["mean"],
+            config["data"]["std"],
+        ),
+        sample_id_to_idx,
+    )
 
 
 def _accuracy(logits: torch.Tensor, targets: torch.Tensor) -> float:
@@ -188,11 +199,22 @@ def main():
     parser = argparse.ArgumentParser(description="Train flat ResNet50 C1 baseline.")
     parser.add_argument("--config", type=Path, default=Path("configs/experiments/c1_resnet50_baseline.yaml"))
     parser.add_argument("--dry-run", action="store_true", help="Load two batches, run one fwd/bwd, one val batch, exit.")
+    parser.add_argument("--epochs", type=int, default=None, help="Override number of epochs.")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size.")
+    parser.add_argument("--num-workers", type=int, default=None, help="Override dataloader num_workers.")
     parser.add_argument("--device", type=str, default=None, help="Override device (cpu/cuda/auto).")
     args = parser.parse_args()
 
     config = _load_config(args.config)
     _set_seed(config["training"]["seed"])
+
+    # Override config with CLI args
+    if args.epochs is not None:
+        config["training"]["num_epochs"] = args.epochs
+    if args.batch_size is not None:
+        config["training"]["batch_size"] = args.batch_size
+    if args.num_workers is not None:
+        config["training"]["num_workers"] = args.num_workers
 
     device_str = args.device or config["training"].get("device", "auto")
     device = torch.device("cuda" if (device_str == "auto" and torch.cuda.is_available()) else (device_str if device_str != "auto" else "cpu"))
@@ -208,11 +230,12 @@ def main():
     train_ds = _build_subset_dataset(Path(config["train_split"]), class_to_idx, config)
     val_ds = _build_subset_dataset(Path(config["val_split"]), class_to_idx, config)
 
+    num_workers = config["training"].get("num_workers", 0)
     train_loader = DataLoader(
         train_ds,
         batch_size=config["training"]["batch_size"],
         shuffle=True,
-        num_workers=0,  # safe for tar / CPU
+        num_workers=num_workers,
         drop_last=True,
         collate_fn=_collate_fn,
     )
@@ -220,7 +243,7 @@ def main():
         val_ds,
         batch_size=config["training"]["batch_size"],
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
         collate_fn=_collate_fn,
     )
 

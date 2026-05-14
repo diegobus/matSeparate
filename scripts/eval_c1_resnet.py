@@ -46,6 +46,8 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate ResNet50 C1 checkpoint.")
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size.")
+    parser.add_argument("--num-workers", type=int, default=None, help="Override dataloader num_workers.")
     parser.add_argument("--device", type=str, default="auto")
     args = parser.parse_args()
 
@@ -55,6 +57,11 @@ def main():
     with open(args.run_dir / "class_to_idx.json") as f:
         class_to_idx = json.load(f)
 
+    if args.batch_size is not None:
+        config["training"]["batch_size"] = args.batch_size
+    if args.num_workers is not None:
+        config["training"]["num_workers"] = args.num_workers
+
     device_str = args.device
     device = torch.device(
         "cuda" if (device_str == "auto" and torch.cuda.is_available()) else (device_str if device_str != "auto" else "cpu")
@@ -63,11 +70,12 @@ def main():
 
     split_csv = Path(config[f"{args.split}_split"])
     ds = _build_subset_dataset(split_csv, class_to_idx, config)
+    num_workers = config["training"].get("num_workers", 0)
     loader = DataLoader(
         ds,
         batch_size=config["training"]["batch_size"],
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
         collate_fn=_collate_fn,
     )
 

@@ -4,7 +4,16 @@ experiment_name: c1_resnet50_baseline
 # Data paths
 manifest_csv: data/processed/matador_c1/manifest.csv
 taxonomy_json: taxonomy/assets/matador-c1-taxonomy.json
+
+# Prefer extracted images for training speed.
+# Manifest image_path values are like:
+#   matador/texture_img/<sample_id>.tiff
+# so extracted_root should be the directory that contains the top-level matador/ folder.
+extracted_root: data/external/matador
+
+# Fallback for smoke tests or no-extraction mode.
 appearance_tar: data/downloads/matador.appearance.tar
+
 train_split: data/processed/matador_c1/splits/train.csv
 val_split: data/processed/matador_c1/splits/val.csv
 test_split: data/processed/matador_c1/splits/test.csv

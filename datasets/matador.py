@@ -198,6 +198,17 @@ class MatadorC1Dataset(Dataset):
             "image_path": image_path,
         }
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # tarfile.TarFile cannot be pickled; exclude and reopen on unpickle
+        state["_tar"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        if self.appearance_tar is not None:
+            self._tar = tarfile.open(self.appearance_tar, "r:*")
+
     def __del__(self):
         if self._tar is not None:
             self._tar.close()

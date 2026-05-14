@@ -1,0 +1,216 @@
+{
+    "name": "root",
+    "children": [
+        {
+            "name": "solid",
+            "children": [
+                {
+                    "name": "abiotic",
+                    "children": [
+                        {
+                            "name": "metal",
+                            "children": [
+                                {
+                                    "name": "generic_metal"
+                                }
+                            ]
+                        },
+                        {
+                            "name": "rock",
+                            "children": [
+                                {
+                                    "name": "solid_mass",
+                                    "children": [
+                                        {
+                                            "name": "granite"
+                                        },
+                                        {
+                                            "name": "limestone"
+                                        },
+                                        {
+                                            "name": "marble"
+                                        },
+                                        {
+                                            "name": "shale"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "aggregate",
+                                    "children": [
+                                        {
+                                            "name": "gravel"
+                                        },
+                                        {
+                                            "name": "sand"
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "name": "ceramic",
+                            "children": [
+                                {
+                                    "name": "decorative",
+                                    "children": [
+                                        {
+                                            "name": "plaster"
+                                        },
+                                        {
+                                            "name": "pottery"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "structural",
+                                    "children": [
+                                        {
+                                            "name": "asphalt"
+                                        },
+                                        {
+                                            "name": "brick"
+                                        },
+                                        {
+                                            "name": "concrete"
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "name": "polymer",
+                            "children": [
+                                {
+                                    "name": "textile",
+                                    "children": [
+                                        {
+                                            "name": "nylon"
+                                        },
+                                        {
+                                            "name": "wool"
+                                        },
+                                        {
+                                            "name": "carbon_fiber"
+                                        },
+                                        {
+                                            "name": "carpet"
+                                        },
+                                        {
+                                            "name": "satin"
+                                        },
+                                        {
+                                            "name": "natural_fiber"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "plastic",
+                                    "children": [
+                                        {
+                                            "name": "foam"
+                                        },
+                                        {
+                                            "name": "wax"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "biotic",
+                    "children": [
+                        {
+                            "name": "natural",
+                            "children": [
+                                {
+                                    "name": "vegetation",
+                                    "children": [
+                                        {
+                                            "name": "flower"
+                                        },
+                                        {
+                                            "name": "foliage"
+                                        },
+                                        {
+                                            "name": "ivy"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "terrain",
+                                    "children": [
+                                        {
+                                            "name": "grass"
+                                        },
+                                        {
+                                            "name": "moss"
+                                        },
+                                        {
+                                            "name": "plant_litter"
+                                        },
+                                        {
+                                            "name": "soil"
+                                        },
+                                        {
+                                            "name": "straw"
+                                        }
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "name": "derivative",
+                            "children": [
+                                {
+                                    "name": "wood",
+                                    "children": [
+                                        {
+                                            "name": "paper"
+                                        },
+                                        {
+                                            "name": "timber"
+                                        },
+                                        {
+                                            "name": "tree_bark"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "animal_hide",
+                                    "children": [
+                                        {
+                                            "name": "fur"
+                                        },
+                                        {
+                                            "name": "leather"
+                                        },
+                                        {
+                                            "name": "suede"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "name": "food",
+                                    "children": [
+                                        {
+                                            "name": "fruit"
+                                        },
+                                        {
+                                            "name": "vegetable"
+                                        },
+                                        {
+                                            "name": "bread"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

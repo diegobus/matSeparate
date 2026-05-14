@@ -1,0 +1,13 @@
+.venv/
+.DS_Store
+__pycache__/
+*.pyc
+
+data/downloads/
+data/external/
+*.tar
+
+runs/
+checkpoints/
+
+.windsurf/

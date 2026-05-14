@@ -9,5 +9,6 @@ data/external/
 
 runs/
 checkpoints/
+*.pt
 
 .windsurf/

@@ -1,0 +1,38 @@
+# Flat ResNet50 baseline for Matador-C1 leaf classification
+experiment_name: c1_resnet50_baseline
+
+# Data paths
+manifest_csv: data/processed/matador_c1/manifest.csv
+taxonomy_json: taxonomy/assets/matador-c1-taxonomy.json
+appearance_tar: data/downloads/matador.appearance.tar
+train_split: data/processed/matador_c1/splits/train.csv
+val_split: data/processed/matador_c1/splits/val.csv
+test_split: data/processed/matador_c1/splits/test.csv
+
+# Model
+model:
+  backbone: resnet50
+  pretrained: true
+  num_classes: 37
+
+# Training
+training:
+  image_size: 224
+  batch_size: 32
+  num_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  device: auto  # auto, cpu, cuda
+  seed: 1337
+
+# Augmentation
+data:
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+# Logging / checkpoints
+logging:
+  log_interval: 10
+  save_interval: 5
+  runs_dir: runs

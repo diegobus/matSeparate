@@ -63,9 +63,15 @@ def main():
         config["training"]["num_workers"] = args.num_workers
 
     device_str = args.device
-    device = torch.device(
-        "cuda" if (device_str == "auto" and torch.cuda.is_available()) else (device_str if device_str != "auto" else "cpu")
-    )
+    if device_str == "auto":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    else:
+        device = torch.device(device_str)
     print(f"Device: {device}")
 
     split_csv = Path(config[f"{args.split}_split"])

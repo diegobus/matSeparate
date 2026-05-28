@@ -41,14 +41,23 @@ def hierarchical_softmax_loss(
         level_logits = logits[:, level]  # Select logits for the current level
         level_targets = targets[:, level]
 
+        participation = None
         if enforce_participation:
             participation = level_targets.sum(dim=1) > 0
             level_logits = level_logits[participation]
             level_targets = level_targets[participation]
 
-        loss += coeff(l) * F.cross_entropy(
+        ce = F.cross_entropy(
             level_logits, level_targets.argmax(dim=1), reduction=reduction
         )
+
+        if reduction == "none":
+            if enforce_participation:
+                loss[participation] += coeff(l) * ce
+            else:
+                loss += coeff(l) * ce
+        else:
+            loss += coeff(l) * ce
     return loss
 
 

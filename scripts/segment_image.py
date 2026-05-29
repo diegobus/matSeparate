@@ -57,6 +57,13 @@ def main():
                         help="patch sampler (sliding = finer)")
     parser.add_argument("--window-size", type=int, default=None, help="sliding window size (px)")
     parser.add_argument("--stride", type=int, default=None, help="sliding window stride (px)")
+    parser.add_argument(
+        "--bg-threshold",
+        type=float,
+        default=None,
+        help="max-prob below this -> background/unknown. Use 0 to label every pixel "
+        "(recommended for mask-similarity comparison).",
+    )
     parser.add_argument("--viz", type=Path, default=None, help="save a composite panel figure here")
     parser.add_argument(
         "--compare-levels",
@@ -86,6 +93,8 @@ def main():
         config.sampling.window_size = args.window_size
     if args.stride is not None:
         config.sampling.stride = args.stride
+    if args.bg_threshold is not None:
+        config.objects.bg_threshold = args.bg_threshold
 
     if args.stub:
         merger = _build_stub_merger(config)

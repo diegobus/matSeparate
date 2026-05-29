@@ -86,7 +86,7 @@ labels_multihot = torch.tensor(
 )
 
 out = model(img)
-loss = greedy_loss(out, labels_multihot, HIERARCHY_LEVELS)
+loss = greedy_loss(out, labels_multihot, HIERARCHY_LEVELS, mode="combined")
 print(loss)
 
 

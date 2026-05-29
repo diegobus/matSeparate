@@ -45,6 +45,7 @@ training:
   device: auto
   seed: 1337
   loss: greedy_loss
+  loss_mode: combined  # max | combined | parent_child_consistency
 
 logging:
   runs_dir: runs

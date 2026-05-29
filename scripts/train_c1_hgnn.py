@@ -23,6 +23,7 @@ import torch.nn as nn
 import torchvision.transforms as T
 import yaml
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
@@ -362,7 +363,7 @@ def _ensure_2d_logits(logits: torch.Tensor, batch_size: int) -> torch.Tensor:
 # Training / validation
 # --------------------------------------------------------------------------- #
 
-def train_epoch(model, loader, optimizer, leaf_indices, hierarchy_levels, device):
+def train_epoch(model, loader, optimizer, leaf_indices, hierarchy_levels, device, loss_mode="combined", parent_child_pairs=None):
     model.train()
     total_loss = 0.0
     total_leaf_acc = 0.0
@@ -377,7 +378,7 @@ def train_epoch(model, loader, optimizer, leaf_indices, hierarchy_levels, device
 
         optimizer.zero_grad()
         logits = _ensure_2d_logits(model(images), images.size(0))
-        loss = greedy_loss(logits, targets, hierarchy_levels)
+        loss = greedy_loss(logits, targets, hierarchy_levels, mode=loss_mode, parent_child_pairs=parent_child_pairs)
         loss.backward()
         optimizer.step()
 
@@ -401,7 +402,7 @@ def train_epoch(model, loader, optimizer, leaf_indices, hierarchy_levels, device
 
 
 @torch.no_grad()
-def validate(model, loader, leaf_indices, hierarchy_levels, device):
+def validate(model, loader, leaf_indices, hierarchy_levels, device, loss_mode="combined", parent_child_pairs=None):
     model.eval()
     total_loss = 0.0
     total_leaf_acc = 0.0
@@ -415,7 +416,7 @@ def validate(model, loader, leaf_indices, hierarchy_levels, device):
         targets = batch["target_multihot"].to(device)
 
         logits = _ensure_2d_logits(model(images), images.size(0))
-        loss = greedy_loss(logits, targets, hierarchy_levels)
+        loss = greedy_loss(logits, targets, hierarchy_levels, mode=loss_mode, parent_child_pairs=parent_child_pairs)
 
         bs = images.size(0)
         total_loss += loss.item() * bs
@@ -450,6 +451,7 @@ def main():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--prototype-init", type=str, default=None, choices=["cnn_average", "random", "model_default"])
     parser.add_argument("--prototype-path", type=str, default=None)
+    parser.add_argument("--loss-mode", type=str, default=None, choices=["max", "combined", "parent_child_consistency"])
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -466,6 +468,11 @@ def main():
         config["prototypes"]["init"] = args.prototype_init
     if args.prototype_path is not None:
         config["prototypes"]["path"] = args.prototype_path
+    if args.loss_mode is not None:
+        config["training"]["loss_mode"] = args.loss_mode
+
+    loss_mode = config["training"].get("loss_mode", "combined")
+    print(f"Loss mode: {loss_mode}")
 
     _set_seed(config["training"]["seed"])
 
@@ -491,6 +498,13 @@ def main():
     for i, level in enumerate(hierarchy_levels):
         print(f"  Level {i}: {len(level)} nodes")
     print(f"Leaf nodes: {len(leaf_indices)}")
+
+    # Precompute parent-child edge pairs for parent_child_consistency loss
+    parent_child_pairs = torch.tensor(
+        [[node_to_idx[u], node_to_idx[v]] for u, v in graph.edges()],
+        dtype=torch.long,
+    )
+    print(f"Parent-child edges: {parent_child_pairs.shape[0]}")
 
     # ----------------------------------------------------------------------- #
     # Build HGNN
@@ -606,7 +620,7 @@ def main():
         optimizer.zero_grad()
         logits = _ensure_2d_logits(model(batch1["image"].to(device)), batch1["image"].size(0))
         print(f"  Logits shape: {logits.shape}")
-        loss = greedy_loss(logits, batch1["target_multihot"].to(device), hierarchy_levels)
+        loss = greedy_loss(logits, batch1["target_multihot"].to(device), hierarchy_levels, mode=loss_mode, parent_child_pairs=parent_child_pairs)
         loss.backward()
         optimizer.step()
         print(f"  Loss: {loss.item():.4f}")
@@ -617,7 +631,7 @@ def main():
             vbatch = next(iter(val_loader))
             vtargets = vbatch["target_multihot"].to(device)
             vlogits = _ensure_2d_logits(model(vbatch["image"].to(device)), vbatch["image"].size(0))
-            vloss = greedy_loss(vlogits, vtargets, hierarchy_levels)
+            vloss = greedy_loss(vlogits, vtargets, hierarchy_levels, mode=loss_mode, parent_child_pairs=parent_child_pairs)
             print(f"  Val loss: {vloss.item():.4f}")
             print(f"  leaf_acc={leaf_top1_accuracy(vlogits, vtargets, leaf_indices):.4f} "
                   f"node_acc={node_bce_accuracy(vlogits, vtargets):.4f} "
@@ -647,10 +661,12 @@ def main():
     num_epochs = config["training"]["num_epochs"]
     log_interval = config["logging"]["log_interval"]
 
+    writer = SummaryWriter(log_dir=str(run_dir / "tensorboard"))
+
     for epoch in range(1, num_epochs + 1):
         t0 = time.time()
-        train_m = train_epoch(model, train_loader, optimizer, leaf_indices, hierarchy_levels, device)
-        val_m = validate(model, val_loader, leaf_indices, hierarchy_levels, device)
+        train_m = train_epoch(model, train_loader, optimizer, leaf_indices, hierarchy_levels, device, loss_mode=loss_mode, parent_child_pairs=parent_child_pairs)
+        val_m = validate(model, val_loader, leaf_indices, hierarchy_levels, device, loss_mode=loss_mode, parent_child_pairs=parent_child_pairs)
         elapsed = time.time() - t0
 
         metrics_log.append({
@@ -669,6 +685,20 @@ def main():
             "val_hier_acc": val_m["hier_acc"],
             "time_sec": elapsed,
         })
+
+        # TensorBoard logging
+        writer.add_scalar("Loss/train", train_m["loss"], epoch)
+        writer.add_scalar("Loss/val", val_m["loss"], epoch)
+        writer.add_scalar("Accuracy/leaf_train", train_m["leaf_acc"], epoch)
+        writer.add_scalar("Accuracy/leaf_val", val_m["leaf_acc"], epoch)
+        writer.add_scalar("Accuracy/node_train", train_m["node_acc"], epoch)
+        writer.add_scalar("Accuracy/node_val", val_m["node_acc"], epoch)
+        writer.add_scalar("Accuracy/exact_train", train_m["exact_match"], epoch)
+        writer.add_scalar("Accuracy/exact_val", val_m["exact_match"], epoch)
+        writer.add_scalar("Accuracy/path_f1_train", train_m["path_f1"], epoch)
+        writer.add_scalar("Accuracy/path_f1_val", val_m["path_f1"], epoch)
+        writer.add_scalar("Accuracy/hier_train", train_m["hier_acc"], epoch)
+        writer.add_scalar("Accuracy/hier_val", val_m["hier_acc"], epoch)
 
         if epoch % log_interval == 0 or epoch == 1:
             print(f"Epoch {epoch:02d}/{num_epochs}  "
@@ -699,11 +729,14 @@ def main():
                 "hierarchy_levels": [level.tolist() for level in hierarchy_levels],
             }, run_dir / "checkpoint_best.pt")
 
+    writer.close()
+
     with open(run_dir / "metrics.json", "w") as f:
         json.dump(metrics_log, f, indent=2)
 
     print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
     print(f"Artifacts saved to {run_dir}")
+    print(f"TensorBoard logs: tensorboard --logdir={run_dir / 'tensorboard'}")
 
 
 if __name__ == "__main__":

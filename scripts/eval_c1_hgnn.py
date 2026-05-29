@@ -247,6 +247,12 @@ def main():
     hierarchy_levels = _compute_hierarchy_levels(graph, node_to_idx)
     leaf_indices = _get_leaf_indices(graph, node_to_idx).to(device)
 
+    loss_mode = config["training"].get("loss_mode", "combined")
+    parent_child_pairs = torch.tensor(
+        [[node_to_idx[u], node_to_idx[v]] for u, v in graph.edges()],
+        dtype=torch.long,
+    )
+
     # Build model
     model = HGNN(
         graph=graph,
@@ -321,7 +327,7 @@ def main():
             targets = batch["target_multihot"].to(device)
 
             logits = _ensure_2d_logits(model(images), images.size(0))
-            loss = greedy_loss(logits, targets, hierarchy_levels)
+            loss = greedy_loss(logits, targets, hierarchy_levels, mode=loss_mode, parent_child_pairs=parent_child_pairs)
 
             bs = images.size(0)
             total_loss += loss.item() * bs

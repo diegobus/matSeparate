@@ -1,5 +1,5 @@
 from itertools import chain
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -65,33 +65,71 @@ def greedy_loss(
     node_logits: torch.Tensor,
     labels_multihot: torch.Tensor,
     hierarchy_levels: List[np.ndarray],
+    mode: str = "combined",
+    parent_child_pairs: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    
-    # Loss on the full path
+    """
+    Hierarchical classification loss with multiple strategies.
+
+    Args:
+        mode:
+            - "max": winner-take-all over path and hierarchy loss per sample.
+            - "combined": weighted sum of path and hierarchy loss.
+            - "parent_child_consistency": combined + hinge penalty when child
+              logit exceeds parent logit (requires parent_child_pairs).
+        parent_child_pairs: (num_edges, 2) tensor of [parent_idx, child_idx]
+            pairs from the taxonomy graph. Required for parent_child_consistency.
+    """
+    # Common components
     path_loss = F.binary_cross_entropy_with_logits(
-        node_logits, 
-        labels_multihot, 
-        reduction="none"
+        node_logits,
+        labels_multihot,
+        reduction="none",
     ).mean(dim=1)
 
-    # Loss on the hierarchy
     hierarchy_loss = hierarchical_softmax_loss(
         node_logits,
         labels_multihot,
         hierarchy_levels,
-        agg="level_size", 
+        agg="level_size",
         reduction="none",
     )
 
-
-    # Winner-take-all loss
-    loss = (
-        torch.cat(
-            (path_loss[..., None], hierarchy_loss[..., None]),
-            dim=1,
+    if mode == "max":
+        loss = (
+            torch.cat(
+                (path_loss[..., None], hierarchy_loss[..., None]),
+                dim=1,
+            )
+            .max(dim=1)
+            .values.mean(dim=0)
         )
-        .max(dim=1)
-        .values.mean(dim=0)
-    )
+    elif mode == "combined":
+        loss = 0.6 * path_loss.mean() + 0.4 * hierarchy_loss.mean()
+    elif mode == "parent_child_consistency":
+        if parent_child_pairs is None or parent_child_pairs.numel() == 0:
+            raise ValueError(
+                "parent_child_pairs is required for parent_child_consistency mode"
+            )
+        parent_child_pairs = parent_child_pairs.to(node_logits.device)
+        parent_indices = parent_child_pairs[:, 0]
+        child_indices = parent_child_pairs[:, 1]
+
+        parent_logits = node_logits[:, parent_indices]  # [B, E]
+        child_logits = node_logits[:, child_indices]    # [B, E]
+
+        # Penalize when child logit exceeds parent logit
+        consistency_loss = torch.relu(child_logits - parent_logits).mean()
+
+        loss = (
+            0.5 * path_loss.mean()
+            + 0.3 * hierarchy_loss.mean()
+            + 0.2 * consistency_loss
+        )
+    else:
+        raise ValueError(
+            f"Unknown loss mode: {mode}. "
+            "Choose from 'max', 'combined', 'parent_child_consistency'."
+        )
 
     return loss

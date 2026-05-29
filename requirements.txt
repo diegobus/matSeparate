@@ -12,3 +12,4 @@ tifffile>=2025.2
 scikit-image>=0.25
 matplotlib>=3.10
 pandas>=2.2
+tensorboard>=2.19

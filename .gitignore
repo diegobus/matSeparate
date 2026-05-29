@@ -11,4 +11,9 @@ runs/
 checkpoints/
 *.pt
 
-.windsurf/
+# secrets / credentials (never commit SSH keys)
+*.pem
+*.key
+id_rsa*
+
+.windsurf/out/

@@ -10,5 +10,16 @@ numpy>=2.2
 pillow>=11.0
 tifffile>=2025.2
 scikit-image>=0.25
+scipy>=1.11
 matplotlib>=3.10
 pandas>=2.2
+pyyaml>=6.0
+
+# --- Segmentation / merging stage (optional extras) ---
+# Dense CRF refinement (preferred boundary refinement; unmaintained native build).
+# If unavailable, the pipeline falls back to a superpixel CRF, then to no CRF.
+#   pip install git+https://github.com/lucasb-eyer/pydensecrf.git
+# pydensecrf
+# COCO-style RLE decode/eval interop (encoding is built in; this is only needed
+# if you want pycocotools to consume instances.json directly).
+# pycocotools>=2.0

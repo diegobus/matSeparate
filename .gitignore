@@ -11,9 +11,12 @@ runs/
 checkpoints/
 *.pt
 
-# secrets / credentials (never commit SSH keys)
+# segmentation pipeline outputs
+out/
+
+# secrets / credentials 
 *.pem
 *.key
 id_rsa*
 
-.windsurf/out/
+.windsurf/

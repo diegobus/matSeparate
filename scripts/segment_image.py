@@ -58,6 +58,18 @@ def main():
     parser.add_argument("--window-size", type=int, default=None, help="sliding window size (px)")
     parser.add_argument("--stride", type=int, default=None, help="sliding window stride (px)")
     parser.add_argument(
+        "--min-patches",
+        type=int,
+        default=None,
+        help="lower bound on patches per image (stride auto-adapts; sliding sampler only)",
+    )
+    parser.add_argument(
+        "--max-patches",
+        type=int,
+        default=None,
+        help="upper bound on patches per image (stride auto-adapts; sliding sampler only)",
+    )
+    parser.add_argument(
         "--bg-threshold",
         type=float,
         default=None,
@@ -93,6 +105,10 @@ def main():
         config.sampling.window_size = args.window_size
     if args.stride is not None:
         config.sampling.stride = args.stride
+    if args.min_patches is not None:
+        config.sampling.min_patches = args.min_patches
+    if args.max_patches is not None:
+        config.sampling.max_patches = args.max_patches
     if args.bg_threshold is not None:
         config.objects.bg_threshold = args.bg_threshold
 
@@ -105,9 +121,14 @@ def main():
             config.run_dir, config=config, device=config.device
         )
 
+    import time
+
+    t0 = time.perf_counter()
     result = merger.segment(args.image, level=args.level)
+    elapsed = time.perf_counter() - t0
     written = result.save(args.out)
 
+    print(f"Done in {elapsed:.1f}s")
     print(f"Level: {result.level}")
     print(f"Classes ({len(result.frontier_names)}): {', '.join(result.frontier_names)}")
     print(f"Objects: {len(result.instances)}")

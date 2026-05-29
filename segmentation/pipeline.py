@@ -158,8 +158,8 @@ class MaterialMerger:
         image_uint8 = load_image_uint8(image)
         h, w = image_uint8.shape[:2]
 
-        sample = self.sampler.sample(image_uint8)
-        p_grid = self.classifier.classify(sample)  # (gh, gw, L)
+        p_grid = self.classifier.classify(self.sampler.sample(image_uint8))
+
         p_dense = upsample_probs(
             p_grid,
             target_hw=(h, w),
@@ -174,6 +174,7 @@ class MaterialMerger:
             leaf_names=self.leaf_names,
             graph=self.graph,
         )
+
         return self._finish(refined, image_uint8, level)
 
     def recut(

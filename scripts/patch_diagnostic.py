@@ -43,10 +43,14 @@ def main():
     sample = GridSampler(args.window_size).sample(image)
     gh, gw = sample.grid_shape
 
+    import time
+
+    t0 = time.perf_counter()
     results = api.infer_batch(
         [sample.patches[i] for i in range(len(sample.grid_coords))],
         return_probs=True, decode_path=False,
     )
+    print(f"classified {len(results)} patches in {time.perf_counter() - t0:.1f}s")
 
     import matplotlib
     matplotlib.use("Agg")

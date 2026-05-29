@@ -1,12 +1,14 @@
 # MERGE.md — Material Merging & Segmentation Algorithm
 
-Design and implementation plan for the **final stage** of the matSeparate pipeline:
-turn a single input image into **material-based object segmentation masks**, using the
-trained HGNN patch classifier, bilinear upsampling, and a dense CRF, with output
-formatted to match the **MINC** dataset (the baseline is Segment Anything Model on MINC).
+The **final stage** of the matSeparate pipeline: turn a single input image into
+**material-based segmentation masks** using the trained HGNN patch classifier, then
+upsampling, CRF refinement, and taxonomy-aware post-processing. Output is formatted to
+match the **MINC** dataset so results are comparable to the Segment-Anything-on-MINC
+baseline.
 
-> Status: design doc only. No code is written yet. This file is the contract for the
-> implementation that follows.
+> Status: **implemented.** This document describes the current architecture and the
+> rationale (and supporting experiments) behind each design choice. Module names and
+> config keys match the code in `segmentation/`, `scripts/`, and `configs/segmentation.yaml`.
 
 ---
 
@@ -14,292 +16,240 @@ formatted to match the **MINC** dataset (the baseline is Segment Anything Model 
 
 Given an RGB image, produce:
 
-1. A **semantic per-pixel material label map** (MINC-style single-channel PNG of class
-   IDs + a JSON legend), segmented at a **user-chosen level of the taxonomy** (e.g.
-   `biotic` vs `abiotic` at depth 2, or full material leaves like `timber`/`marble` at
-   depth 5).
+1. A **semantic per-pixel material label map** (MINC-style single-channel PNG of class IDs
+   + a JSON legend), segmented at a **user-chosen level of the taxonomy** (e.g. `biotic`
+   vs `abiotic` at depth 2, or full material leaves like `timber`/`marble`).
 2. **Per-object instance masks** derived from that label map, where an *object* is a
-   **spatially-connected region of a single material** at the chosen level. (So a wooden
-   bowl touching a wooden table becomes **one** wood object; two non-touching wood
-   regions are two objects.)
+   **spatially-connected region of a single material** at the chosen level. (A wooden bowl
+   touching a wooden table is **one** wood object; two non-touching wood regions are two.)
 
-The algorithm must be **customizable to any taxonomy level** and must mirror MINC's
-ground-truth file conventions so results are directly comparable to the SAM-on-MINC
-baseline.
+### Locked design decisions
 
-### Locked design decisions (from requirements)
-
-| Decision | Choice |
-|---|---|
-| Output format | **Both** a semantic label map (MINC-style) **and** per-object instance masks (COCO-style) |
-| Definition of an "object" | **Spatially-connected components** of the same material |
-| Taxonomy level selection | **Default = full leaf granularity** (all 37 leaf materials, most detailed). Coarsening is opt-in: cut to a shallower depth `d`, where each leaf maps to its ancestor at depth `d`. A leaf shallower than `d` keeps its own label (preserves detail; only relevant if `d` is pushed past a branch's end). |
-| SAM's role | **Baseline only** — not used inside the merging algorithm |
-| Low-confidence pixels | Assigned to a dedicated **`background/unknown`** class via a confidence threshold |
-| Patch sampling | **Non-overlapping grid, single scale** (default; pluggable for overlap/multi-scale) |
+| Decision | Choice | Why |
+|---|---|---|
+| Output format | **Both** a semantic label map (MINC-style PNG + JSON) **and** per-object instance masks (COCO-style RLE/JSON) | matches both MINC (semantic) and SAM (instance) baselines |
+| Definition of an "object" | **Spatially-connected components** of the same material | per requirement (bowl-on-table = one object) |
+| Taxonomy level | **Default = full leaf granularity** (37 leaves). Coarsening is opt-in: cut to depth `d`, each leaf → its ancestor at depth `d`; a leaf shallower than `d` keeps its own label | most detail by default; coarsening is one matmul on cached leaf probs |
+| SAM's role | **Baseline only** — never used inside the algorithm | |
+| Low-confidence pixels | **Argmax everywhere by default** (`bg_threshold = 0.0`); a positive threshold re-enables a `background/unknown` class | for mask-similarity vs MINC, every pixel should carry a label (MINC GT labels every pixel) |
+| Patch sampling | **Sliding window, default `window=48`, `stride=24`**, with optional `[min,max]` patch-count bounds and multi-scale context; non-overlapping `grid` still available | empirically the cleanest masks (Section 5.1); overlap-averaging suppresses per-tile noise |
 
 ---
 
 ## 2. Why bilinear upsampling + dense CRF (assessment)
 
-This is the right call and is **deliberately aligned with MINC itself**. Bell et al. 2015
-("Material Recognition in the Wild with the Materials in Context Database") perform full
-scene material classification with exactly this recipe: a patch CNN turned into a sliding
-predictor produces a coarse probability map, the maps are **upsampled and averaged**, and
-a **fully-connected (dense) CRF** (Krähenbühl & Koltun) yields the final per-pixel label.
-Matching that recipe makes our method a fair counterpart to the SAM-on-MINC baseline.
+Deliberately **aligned with MINC itself.** Bell et al. 2015 do full-scene material
+classification with exactly this recipe: a patch CNN as a sliding predictor produces a
+coarse probability map, the maps are **upsampled and averaged**, and a **fully-connected
+(dense) CRF** (Krähenbühl & Koltun) yields the per-pixel label. Matching that recipe makes
+our method a fair counterpart to SAM-on-MINC.
 
-Key engineering points baked into this plan:
+Engineering principles baked in:
 
-- **Operate in probability/logit space, never on hard labels.** Upsampling and any
-  averaging happen on the per-class probability tensor; `argmax` is taken only at the very
-  end. (This is the explicit warning in `INFERENCE_GUIDE.md`.)
-- **Grid sampling is intentionally coarse**, so the CRF is the component that recovers
-  material boundaries from a blocky unary. The pairwise bilateral term (position + RGB)
-  snaps the blocky grid to real image edges. We therefore treat CRF quality as
-  first-class, and keep sampling pluggable so overlap/multi-scale can be enabled later for
-  a denser unary.
-- **Taxonomy-aware CRF compatibility (enhancement):** the label-compatibility matrix can
-  be initialized from taxonomy distance so confusing two sibling materials (e.g.
-  `granite`↔`marble`) costs less than confusing distant ones (e.g. `granite`↔`fur`). This
-  reuses the HGNN's hierarchy and is cheap to add.
-- **Cut the taxonomy level *after* CRF**, on leaf-level probabilities, so any level can be
-  re-derived without re-running classification or CRF.
-- **Dependency caveat:** `pydensecrf` (the standard dense-CRF implementation) is
-  unmaintained and can be awkward to build on recent Python/NumPy. We isolate it behind a
-  `crf.py` interface with a documented install path and a pure-Python/superpixel fallback
-  so the pipeline still runs if the wheel won't build.
-
-Net: bilinear upsampling + dense CRF is appropriate and baseline-faithful; the main risks
-are (a) the coarseness of grid unaries and (b) the `pydensecrf` install, both mitigated
-above.
+- **Operate in probability space, never on hard labels.** Upsampling, multi-scale
+  averaging, smoothing, and aggregation all happen on per-class probabilities; `argmax` is
+  taken only at the very end (the explicit warning in `INFERENCE_GUIDE.md`).
+- **Cut the taxonomy level *after* refinement**, on cached leaf probabilities, so any level
+  is one cheap matmul away (`recut` never re-runs classify/CRF).
+- **CRF is treated as first-class** for de-blocking grid unaries, but is **isolated behind
+  a fallback chain** because of a real dependency problem (Section 5.4).
 
 ---
 
-## 3. Inputs the algorithm builds on (current repo state)
+## 3. Inputs the algorithm builds on
 
-- **Classifier:** `HGNN` (`gnn_classifier/hgnn.py`) wrapped by
-  `HGNNInference` (`scripts/infer_api.py`).
-  - `HGNNInference.from_run_dir(run_dir)` rebuilds the model from `config.yaml`,
-    `node_index.json`, `checkpoint_best.pt`.
-  - `api.infer(image)` returns per-image:
-    - `leaf_probs` — softmax over the **37 leaf** materials,
-    - `node_probs` — sigmoid over **all 58 taxonomy nodes**,
-    - `path_nodes` / `path_indices` — decoded root→leaf path,
-    - `leaf_idx`, `logits`.
-  - `api.infer_batch(images)` does the same for a list (used to batch all patches).
-  - Exposed structure we reuse: `api.leaf_indices`, `api.leaf_names`,
-    `api.idx_to_node`, `api.node_to_idx`, `api.hierarchy_levels`, and
-    `api.model.adjacency_matrix`.
+- **Classifier:** `HGNN` (`gnn_classifier/hgnn.py`) wrapped by `HGNNInference`
+  (`scripts/infer_api.py`). `from_run_dir` rebuilds it from `config.yaml` /
+  `node_index.json` / `checkpoint_best.pt`. `infer_batch` returns `leaf_probs` (softmax
+  over **37 leaves**), `node_probs` (sigmoid over **58 nodes**), and the decoded path.
+  - **Checkpoint choice:** use an **HGNN** run, *not* the `c1_resnet50_baseline` (flat
+    classifier with no hierarchy — it cannot drive level cuts, taxonomy-aware smoothing, or
+    hierarchical consistency). Among HGNN runs (`avg_init` vs `rand_init`), pick by
+    validation `metrics.json`; we default to `avg_init` (`prototypes.init: cnn_average`,
+    generally the more stable init).
 - **Taxonomy:** `taxonomy/tree.py` + `taxonomy/assets/matador-c1-taxonomy.json`.
-  Useful helpers we reuse: `get_taxonomy`, `get_hierarchy_levels`,
-  `get_hierarchy_mask`, `nx.shortest_path`, `nx.descendants`.
-- **Recommended checkpoint:** HGNN `avg_init` run (per `INFERENCE_GUIDE.md`).
 
 ### The Matador-C1 taxonomy is ragged (matters for level cuts)
 
-Depths (root = 0) in `taxonomy/assets/matador-c1-taxonomy.json`:
-
-```
-0 root
-1 solid
-2 abiotic, biotic
-3 metal, rock, ceramic, polymer, natural, derivative
-4 generic_metal(leaf), solid_mass, aggregate, decorative, structural,
-  textile, plastic, vegetation, terrain, wood, animal_hide, food
-5 granite, limestone, marble, shale, gravel, sand, plaster, pottery, asphalt,
-  brick, concrete, nylon, wool, carbon_fiber, carpet, satin, natural_fiber,
-  foam, wax, flower, foliage, ivy, grass, moss, plant_litter, soil, straw,
-  paper, timber, tree_bark, fur, leather, suede, fruit, vegetable, bread
-```
-
-The single irregularity: **`generic_metal` is the only leaf at depth 4**; every other
-leaf is at depth 5. Because the **default frontier is the leaf set itself** (not a fixed
-depth) and coarsening only ever goes *shallower* (`d ≤ 4`), every leaf always has a
-well-defined ancestor at the requested depth — so this irregularity does **not** cause any
-ambiguity in practice. It only matters if someone explicitly requests `d = 5`, in which
-case `generic_metal` (being shallower than 5) simply keeps its own label.
+`generic_metal` is the only **leaf at depth 4**; all other leaves are at depth 5. Because
+the default frontier is the leaf set itself and coarsening only goes shallower (`d ≤ 4`),
+every leaf always has a well-defined depth-`d` ancestor, so the irregularity causes no
+ambiguity. It matters only if `d = 5` is explicitly requested, where `generic_metal`
+simply keeps its own label.
 
 ---
 
-## 4. Algorithm overview
+## 4. Architecture overview
 
 ```
 input image (H×W×3, arbitrary size)
         │
         ▼
-[1] Patch grid extraction            → list of patches + (row,col) grid coords
+[1] Patch sampling (sliding window, optional multi-scale)   → patches + grid coords
         │
         ▼
-[2] Patch classification (HGNN)      → coarse leaf-prob grid  P_grid (gh×gw×37)
+[2] Patch classification (HGNN)                             → coarse leaf-prob grid P_grid (gh×gw×37)
+        │   (multi-scale: average P_grid over context scales)
+        ▼
+[2b] Taxonomy-aware grid smoothing (optional)               → smoothed P_grid
         │
         ▼
-[3] Bilinear upsampling              → dense leaf-prob map     P_dense (H×W×37)
+[3] Bilinear upsampling                                     → dense leaf-prob map P_dense (H×W×37)
         │
         ▼
-[4] Dense CRF refinement             → refined leaf-prob/label  (H×W×37)/(H×W)
+[4] CRF refinement (dense → superpixel → none fallback)     → refined leaf probs (H×W×37)
         │
         ▼
-[5] Taxonomy level cut (strict d)    → frontier-prob map        F (H×W×K_d)
-        │                               + background/unknown via threshold
-        ▼
-[6] Label map + connected-component  → semantic map  L (H×W, int ids)
-    instance extraction                + instances   [(mask, material, score)]
+[4b] Hierarchical consistency (optional)                    → branch-restricted leaf probs
         │
         ▼
-[7] MINC-style + COCO-style export    → label_map.png, labels.json,
-                                        instances.json (+ optional viz)
+[5] Taxonomy level cut (leaf default, or depth d)           → frontier-prob map F (H×W×K)
+        │   (+ optional background via bg_threshold)
+        ▼
+[6] Label map + connected-component instances               → semantic map L + objects
+        │
+        ▼
+[7] MINC-style + COCO-style export (+ optional viz)
 ```
 
-Each numbered stage is one module (Section 6). Stages 5–7 are cheap and re-runnable for a
-different level without recomputing 1–4 (we cache `P_dense` / the CRF output).
+Stages `[2b]`, `[4b]` and the multi-scale part of `[2]` are **optional, default-off /
+identity** — turning them all off reproduces the original plain pipeline. They exist to
+fight one observed failure mode (Section 5.6). Stages 5–7 are cheap and re-runnable for a
+different level via `recut` (the refined leaf-prob map is cached on the result).
 
 ---
 
-## 5. Stage-by-stage design
+## 5. Stage-by-stage design & rationale
 
-### [1] Patch grid extraction — `segmentation/patches.py`
+### 5.1 Patch sampling — `segmentation/patches.py`
 
-- **Default:** tile the image into a **non-overlapping grid** of square patches of side
-  `patch_size` (the model's training crop, 224). The bottom/right remainder is handled by
-  reflect-padding the image up to a multiple of `patch_size` (so every patch is full-size
-  and the grid is rectangular).
-- Each patch records its grid index `(gi, gj)` and pixel bounds `(y0,y1,x0,x1)`.
-- The **coarse grid resolution** is `gh = ceil(H/patch_size)`, `gw = ceil(W/patch_size)`.
-  Each grid cell will hold one 37-vector of leaf probabilities.
-- **Pluggable sampler interface** (`PatchSampler`) so `GridSampler` (default) can be
-  swapped for `SlidingWindowSampler(stride, scales=[...])` later without touching stages
-  2–7. Overlapping/multi-scale samplers accumulate probabilities into the coarse grid (or
-  directly into a dense accumulator) with a count buffer for averaging.
+Two samplers behind a small `PatchSampler` interface:
 
-**Scale note:** the HGNN was trained on 224 crops of close-up material images. A single
-224 patch of a full scene may contain whole objects rather than a material close-up. This
-is an inherent domain gap; the pluggable multi-scale sampler is the mitigation path if
-leaf accuracy on scenes is poor. Documented as a known risk, not solved by default.
+- **`GridSampler`** — non-overlapping `patch_size` (224) tiles, reflect-padded. Fast and
+  coarse; kept as a fallback / baseline.
+- **`SlidingWindowSampler` (default)** — overlapping windows of `window_size` at spacing
+  `stride`, each later resized to 224. A *small* window both densifies the prediction grid
+  **and** moves each crop closer to the close-up material training distribution.
 
-### [2] Patch classification — `segmentation/classify.py`
+**Why sliding window at ~48/24 by default — empirical.** A window-size sweep on a MINC
+scene (leaf level) showed a clear **U-shape**, not "smaller is always better":
 
-- Run `HGNNInference.infer_batch` over all patches (batched, on `device`).
-- For each patch, keep **`leaf_probs` (37,)** as the canonical distribution. (We use leaf
-  softmax, not the sigmoid `node_probs`, because leaf softmax is a proper normalized
-  distribution; all higher-level node probabilities are derived by summing descendant
-  leaves — Section 5[5].)
-- Assemble `P_grid` with shape `(gh, gw, 37)`.
-- Optionally also keep a per-cell max-prob (confidence) for diagnostics.
-- Caching: `P_grid` keyed by `(image_hash, run_dir, sampler_config)`.
+| window / stride | ≈ patches | objects | mask quality |
+|---|---|---|---|
+| 224 (grid) | 4 | 2 | two giant blobs |
+| 64 / 32 | 121 | 28 | noisy, fragmented |
+| **48 / 24** | ~576 | 15 | **cleanest — coherent wall/sky/gravel** |
+| 32 / 16 | ~1369 | 13 | clean, slight speckle |
+| 24 / 12 | ~2560 | 27 | degrades — regions shatter |
 
-### [3] Bilinear upsampling — `segmentation/upsample.py`
+Below ~32px each tile loses context and the classifier flips labels between neighbors,
+*re-introducing* fragmentation. The win at 48 comes mostly from **overlap-averaging** (each
+pixel is a vote over several windows), not from tiles being "more single-material."
 
-- Upsample `P_grid (gh,gw,37)` → `P_dense (H,W,37)` with **bilinear** interpolation,
-  `align_corners=False`, performed per-channel in probability space.
-- Renormalize across the 37 channels after interpolation (bilinear mixing can break the
-  simplex slightly) so each pixel is a valid distribution.
-- Implementation via `torch.nn.functional.interpolate` on a `(1,37,gh,gw)` tensor.
-- For overlapping/multi-scale samplers this stage instead reads the dense accumulator and
-  divides by the count buffer; the grid path is the simple bilinear case.
+**Patch-count bounds (`min_patches`/`max_patches`).** Patch count scales with image area,
+so a large image explodes (a 50 MB photo ≈ tens of thousands of patches). When bounds are
+set, the sampler **adapts the stride per image** so total patches land in `[min, max]`
+regardless of resolution (coarsen the stride if too many; densify if too few; shrink the
+window only as a last resort for images barely larger than the window). `max_patches` is a
+hard cap. Unset = configured stride used verbatim (unchanged behavior).
 
-### [4] Dense CRF refinement — `segmentation/crf.py`
+**Multi-scale context (`scales`, `sample_scales`).** See 5.6 — same grid sampled at several
+crop scales centered on each position; the per-scale probability grids are averaged.
 
-- Input: original RGB image (`H×W×3`, uint8) + unary from `P_dense`
-  (unary energy = `-log P_dense`, shape `(37, H*W)`).
-- Use `pydensecrf.DenseCRF2D` with:
-  - **Gaussian pairwise** (`addPairwiseGaussian`, `sxy=g_sxy`) — smoothness prior.
-  - **Bilateral pairwise** (`addPairwiseBilateral`, `sxy=b_sxy, srgb=b_srgb`) — edge-aware
-    term that snaps labels to image color boundaries (the key de-blocking step for grid
-    unaries).
-  - `n_iterations` mean-field steps (default 5–10).
-- **Taxonomy-aware compatibility (optional, on by default):** build a `37×37` label
-  compatibility matrix `μ(i,j)` from taxonomy distance between leaf `i` and leaf `j`
-  (e.g. shortest-path hops in the tree, normalized), passed as the `compat` argument so
-  sibling confusions are penalized less than distant ones. Falls back to Potts
-  (`compat=3`) if disabled.
-- Output: refined `(37, H, W)` probabilities (we keep soft output, then argmax later) so
-  stage 5's level cut can still aggregate.
-- **Fallbacks** (selected by config, used if `pydensecrf` unavailable):
-  - `none`: skip CRF, use `P_dense` directly.
-  - `superpixel`: SLIC/Felzenszwalb superpixels (`skimage.segmentation`) + majority-vote
-    of `P_dense` within each superpixel (boundary snapping without the CRF dependency).
+### 5.2 Patch classification — `segmentation/classify.py`
 
-### [5] Taxonomy level cut — `segmentation/taxonomy_cut.py`
+- `PatchClassifier` runs `HGNNInference.infer_batch` over patches (batched on `device`) and
+  assembles `P_grid (gh, gw, 37)` from **`leaf_probs`** — the proper normalized simplex;
+  all coarser node probabilities are derived later by summing descendant leaves.
+- A `tqdm` **progress bar** over batches (graceful no-op if `tqdm` missing) and a `Done in
+  Xs` timing line surface long CPU runs.
+- `StubLeafPredictor` enables checkpoint-free end-to-end tests/plumbing validation.
 
-This is the customization layer. Given the refined **leaf** probability map and a target
-`level`, produce a frontier probability map. The `level` is either:
+### 5.3 Bilinear upsampling — `segmentation/upsample.py`
 
-- **`"leaf"` (default, most detailed):** the frontier is the full set of **37 leaf
-  materials**. The aggregation matrix `A` is the identity (`K_d = 37`), so
-  `generic_metal`, `timber`, `marble`, etc. are all kept distinct. This is the granularity
-  used unless the caller asks for something coarser.
-- **An integer depth `d` (coarsening, opt-in):** make the classification *less* specific.
+`P_grid → P_dense (H,W,37)` per-channel via `F.interpolate` (`align_corners=False`), then
+renormalized onto the simplex (bilinear mixing breaks normalization slightly).
 
-**Frontier definition for an integer depth `d`:**
-1. `frontier(d)` = the nodes that represent each leaf at depth `d`. Each of the 37 leaves
-   maps to its **ancestor at depth `d`** (`nx.shortest_path(root, leaf)[d]`).
-2. Shallow-leaf rule: if a leaf's own depth is `< d`, it has no depth-`d` descendant, so it
-   **keeps its own label** (maximum detail preserved). Because coarsening always uses
-   `d ≤ 4`, this rule is effectively a no-op for this taxonomy (only `generic_metal` at the
-   never-coarsening case `d = 5` would trigger it).
-3. Build the `(37 → K_d)` aggregation matrix `A` (0/1, row-stochastic) from that mapping.
-4. **Frontier probabilities:** `F = P_leaf @ A` (sum the leaf probabilities of all leaves
-   under each frontier node). `F` has shape `(H, W, K_d)` and remains a valid distribution.
+### 5.4 CRF refinement — `segmentation/crf.py`
 
-Keeping `"leaf"` as the canonical cached representation means **any coarser level is one
-cheap matrix multiply away** — `recut(level=d)` never recomputes classification or CRF.
+Edge-aware refinement that snaps blocky grid unaries to image boundaries, with a
+**graceful fallback chain**:
 
-**Background/unknown thresholding:**
-- Let `conf(p) = max_k F[p, k]`. Pixels with `conf(p) < tau` (config `bg_threshold`) are
-  assigned the reserved class id `0 = background/unknown`.
-- The frontier classes get ids `1..K_d`.
+```
+dense (pydensecrf)  ──missing──▶  superpixel (skimage SLIC/Felzenszwalb)  ──missing──▶  none
+```
 
-**Helpers:** depth via `get_hierarchy_levels(graph, "root")`; ancestors via
-`nx.shortest_path`; leaf set via out-degree 0 (matching `_get_leaf_indices` in
-`scripts/infer_api.py`). `level` is accepted as `"leaf"` (default) or an int depth, with a
-future hook for a named-frontier override.
+- **Dense backend:** `pydensecrf.DenseCRF2D` with Gaussian + bilateral pairwise terms.
+- **Taxonomy-aware compatibility (default on for dense):** a `37×37` label-compatibility
+  matrix built from normalized taxonomic distance (`build_taxonomy_compat`), so confusing
+  siblings (`granite`↔`marble`) costs less than confusing distant materials
+  (`granite`↔`fur`).
+- **Reality:** `pydensecrf` is unmaintained and **fails to build on the compute node's
+  Python 3.13** (Cython/Eigen errors) and is awkward on macOS. In practice the pipeline
+  runs on the **superpixel** backend, which averages probabilities within SLIC superpixels
+  — most of the boundary-snapping benefit with zero native-build risk. The fallback is
+  automatic with a logged warning, so the pipeline never hard-fails.
 
-### [6] Label map + connected-component instances — `segmentation/objects.py`
+### 5.5 Taxonomy level cut — `segmentation/taxonomy_cut.py`
 
-- **Semantic label map** `L (H×W, int)`: `argmax_k F` mapped to frontier class ids, with
-  background applied from the threshold above.
-- **Instance extraction (objects):**
-  - For each frontier material class `c` (excluding background), take the binary mask
-    `L == c` and run **connected-components** (`skimage.measure.label`,
-    `connectivity=2` / 8-connectivity).
-  - Each connected component = one **object** with:
-    - `material`: the frontier node name (e.g. `wood`, or `timber` at d=5),
-    - `mask`: binary `H×W`,
-    - `area`, `bbox`,
-    - `score`: mean `conf(p)` over the component's pixels.
-  - **Min-area filter** (`min_object_area`) drops specks; optional **morphological
-    opening** to clean ragged edges. (Note: gap-bridging/closing across occlusions was
-    *not* requested — pure connectivity is used. A `morph_close` flag is left available
-    but defaults off.)
-- A wooden bowl touching a wooden table share class `wood`/`timber` and are 8-connected →
-  a single object, exactly as required.
+The customization layer. `build_frontier(level)` returns a `(37 → K)` 0/1 aggregation
+matrix `A`; `apply_frontier` computes `F = P_leaf @ A`.
 
-### [7] Export — `segmentation/formats.py`
+- **`"leaf"` (default):** `A = I`, all 37 leaves distinct.
+- **integer depth `d`:** each leaf → ancestor at depth `d`; shallow leaves keep their own
+  label. Unit-tested across depths 1–4.
 
-Two coordinated outputs per image, in an output dir named after the image + level:
+Caching `"leaf"` as canonical means **any coarser level is one matmul away** (`recut`).
 
-**A. MINC-style semantic segmentation**
-- `label_map.png`: single-channel 8-bit PNG, pixel value = class id
-  (`0=background/unknown`, `1..K_d` materials). (8-bit is sufficient; `K_d ≤ 37`.)
-- `labels.json`: legend `{ "0": "background", "1": "<material>", ... }`, plus metadata
-  (`level_depth`, `run_dir`, `bg_threshold`, taxonomy version, image size).
-- `label_map_color.png`: optional colorized visualization using a fixed per-material
-  palette (for qualitative comparison vs MINC/SAM figures).
-- This mirrors MINC's per-pixel material label maps (integer ids + category legend);
-  MINC does not ship a single canonical format, so an integer label PNG + JSON legend is
-  the faithful, conventional representation.
+### 5.6 Global-context post-processing (the flip fix)
 
-**B. COCO-style instance masks (SAM-comparable)**
-- `instances.json`: COCO-style list of objects:
-  `{ id, material, category_id, bbox [x,y,w,h], area, score,
-     segmentation: RLE }`. RLE via `pycocotools.mask.encode` (matches how SAM outputs are
-  typically stored/evaluated). Image-level header carries `height`, `width`, `level_depth`.
-- Optional `instances/` dir of per-object binary PNGs for quick inspection.
+**Observed failure mode.** A per-patch diagnostic (`scripts/patch_diagnostic.py`) showed
+the classifier is **low-confidence (≈0.3–0.5) and spatially inconsistent**: adjacent,
+clearly-single-material tiles get different labels — e.g. one brick wall reads as
+`pottery`/`generic_metal`/`foliage`, and a single lemon surface flips between `fruit`,
+`wax`, and `foam` (i.e. across the **biotic/abiotic** split). This is a **domain gap** (the
+HGNN was trained on close-up material crops, not scene tiles), and it fragments masks even
+when tiles are pure. Three levers attack it **without retraining**:
 
-**Optional Matador→MINC category crosswalk** (stretch): a mapping file to relabel our
-frontier classes into MINC's 23 categories, enabling direct numeric comparison against the
-SAM-on-MINC baseline on MINC images. Off by default (kept separate from core export).
+**(a) Multi-scale context windows** — `patches.SlidingWindowSampler.sample_scales`,
+`sampling.scales`. For each grid position, classify the local crop *and* larger crops
+(`window×scale`) centered on the same point, then average. The larger crop "sees" the whole
+lemon → stable `fruit`; the local crop preserves boundaries. Cost: one forward pass per
+scale.
+
+**(b) Taxonomy-aware grid smoothing** — `context.smooth_grid_taxonomy`, `smoothing` config
+(default off). A mean-field update on the coarse grid:
+`P ← normalize(P · exp(weight · (neighbor_avg @ sim)))`, where `sim = 1 − normalized
+taxonomic distance`. Neighbors reinforce **taxonomically compatible** labels, so a
+biotic↔abiotic flip is penalized far more than a sibling swap, cleaning isolated flips.
+
+**(c) Hierarchical consistency** — `context.enforce_hierarchical_consistency`, `hierarchy`
+config (default off, **experimental**). Per pixel, decide the coarse branch (argmax of
+probabilities aggregated to `decision_depth`, e.g. 2 = biotic/abiotic), then **zero leaves
+outside the winning branch** and renormalize. This *structurally* forbids a pixel from
+being both biotic and abiotic. Applied to the refined dense leaf probs (so all level cuts
+inherit the decision).
+
+All three are config-/CLI-gated and default to off/identity; the baseline pipeline is
+unchanged unless they are enabled.
+
+### 5.7 Label map + connected-component instances — `segmentation/objects.py`
+
+- **`build_label_map`**: `argmax_k F` → ids `1..K`. With the default `bg_threshold = 0.0`
+  no pixel is ever background (every pixel takes its best label — what mask-similarity vs
+  MINC wants); a positive threshold re-enables `0 = background/unknown` for low-confidence
+  pixels.
+- **`extract_instances`**: per material class, connected components (`scipy.ndimage`,
+  4/8-connectivity) → one `Instance` each (`material`, `mask`, `bbox`, `area`, `score` =
+  mean confidence). `min_object_area` drops specks; optional `morph_close` (off) bridges
+  gaps. Adjacent same-material regions merge into one object as required.
+
+### 5.8 Export — `segmentation/formats.py`
+
+- **MINC-style:** `label_map.png` (8-bit class ids), `labels.json` (legend + metadata),
+  optional `label_map_color.png` (fixed palette).
+- **COCO-style:** `instances.json` with **RLE implemented natively** (no `pycocotools`
+  dependency), `{id, material, category_id, bbox, area, score, segmentation: RLE}`.
 
 ---
 
@@ -307,34 +257,31 @@ SAM-on-MINC baseline on MINC images. Off by default (kept separate from core exp
 
 ```
 segmentation/
-  __init__.py
-  config.py          # dataclass: SegmentationConfig (all knobs, with defaults)
-  patches.py         # PatchSampler, GridSampler (default), SlidingWindowSampler (hook)
-  classify.py        # PatchClassifier: wraps HGNNInference -> coarse leaf-prob grid
+  config.py          # SegmentationConfig + nested dataclasses (all knobs)
+  patches.py         # PatchSampler, GridSampler, SlidingWindowSampler (+min/max bounds, multi-scale)
+  classify.py        # PatchClassifier (HGNN adapter, progress bar) + StubLeafPredictor
   upsample.py        # bilinear upsample of coarse grid -> dense prob map
-  crf.py             # DenseCRFRefiner (+ superpixel / none fallbacks)
-  taxonomy_cut.py    # frontier(depth) construction, strict folding, leaf->frontier matrix
-  objects.py         # label map + connected-component instance extraction
-  formats.py         # MINC-style label map + legend; COCO-style instances; viz palette
-  metrics.py         # confusion matrix, mIoU / mean-class-acc / pixel-acc, legend alignment
-  visualize.py       # semantic & instance overlays + composite panel figure
-  pipeline.py        # MaterialMerger: orchestrates [1]-[7], caching, multi-level reuse
+  crf.py             # CRF refine: dense (pydensecrf) -> superpixel -> none, + taxonomy compat
+  context.py         # taxonomy-aware grid smoothing + hierarchical consistency
+  taxonomy_cut.py    # build_frontier(level) -> leaf->frontier matrix; apply_frontier
+  objects.py         # label map (argmax/bg) + connected-component instance extraction
+  formats.py         # MINC label map + legend; COCO RLE instances; viz palette
+  metrics.py         # semantic metrics + class-agnostic mask-similarity metrics
+  visualize.py       # semantic & instance overlays, composite + level-comparison panels
+  pipeline.py        # MaterialMerger: orchestrates [1]-[7], caching, recut
 
 scripts/
-  segment_image.py   # CLI: image + run-dir + level -> outputs (+ --viz, --stub)
-  eval_segmentation.py  # CLI: predicted vs GT label maps -> metrics + confusion heatmap
+  segment_image.py   # main CLI (sampler/scales/smooth/hierarchy/bg-threshold/viz/stub)
+  patch_diagnostic.py# per-patch prediction montage (isolates classifier vs merging)
+  compare_masks.py   # class-agnostic mask-similarity vs a reference (e.g. MINC GT)
+  eval_segmentation.py # semantic metrics vs GT label maps
 
-configs/
-  segmentation.yaml  # default SegmentationConfig values
-
-tests/
-  test_taxonomy_cut.py   # leaf default = identity; frontier sets per depth; A row-sums = 1
-  test_objects.py        # connectivity merges adjacent same-material; min-area; bg
-  test_formats.py        # label PNG round-trip, RLE round-trip, legend correctness
-  test_pipeline_smoke.py # tiny synthetic image end-to-end on CPU
+configs/segmentation.yaml   # default config
+tests/                       # taxonomy_cut, objects, formats, pipeline_smoke, metrics,
+                             # visualize, patches (bounds), context (scales/smooth/hierarchy)
 ```
 
-### Public API sketch (for review, not final code)
+### Public API
 
 ```python
 from segmentation.pipeline import MaterialMerger
@@ -342,20 +289,12 @@ from segmentation.config import SegmentationConfig
 
 merger = MaterialMerger.from_run_dir(
     "runs/c1_hgnn_baseline/avg_init_20260529_004313",
-    config=SegmentationConfig(patch_size=224, bg_threshold=0.5),
-    device="auto",
+    config=SegmentationConfig(), device="cpu",
 )
-
-result = merger.segment("scene.jpg", level="leaf")     # default: full 37-leaf detail
-result.save("out/scene/")                              # writes MINC + COCO outputs
-
-# Re-cut to a less specific level without re-running classify/CRF:
-result_l2 = merger.recut(level=2)                      # biotic vs abiotic
-result_l2.save("out/scene_level2/")
+result = merger.segment("scene.jpg", level="leaf")  # default: full 37-leaf detail
+result.save("out/scene/")
+result_l2 = merger.recut(level=2)                   # biotic vs abiotic, no re-classify
 ```
-
-`SegmentationResult` holds: `label_map (H,W)`, `legend`, `instances` (list),
-`frontier_probs` (optional), and the cached `dense_leaf_probs` enabling `recut`.
 
 ---
 
@@ -363,143 +302,133 @@ result_l2.save("out/scene_level2/")
 
 ```yaml
 run_dir: runs/c1_hgnn_baseline/avg_init_20260529_004313
-device: auto
+device: cpu             # torch_geometric scatter ops crash on Apple MPS; cpu locally, cuda on the node
 
 sampling:
-  type: grid            # grid | sliding (hook)
-  patch_size: 224
+  type: sliding         # sliding (default, finer) | grid (coarse)
+  patch_size: 224       # grid tile size / model input
+  window_size: 96       # sliding crop size in image px (resized to 224)
+  stride: 48            # sliding spacing; smaller -> finer/denser/slower
   pad_mode: reflect
-  # sliding-only (future): stride, scales
+  batch_size: 32
+  min_patches: null     # if set, stride auto-adapts so patches >= this
+  max_patches: null     # if set, stride auto-adapts so patches <= this
+  scales: [1.0]         # context scales; e.g. [1.0, 2.0, 3.0] averages multi-scale crops
 
-upsample:
-  mode: bilinear
-  align_corners: false
-  renormalize: true
+upsample: {mode: bilinear, align_corners: false, renormalize: true}
 
 crf:
-  backend: dense        # dense | superpixel | none
+  backend: dense        # dense (pydensecrf) | superpixel | none  (auto-falls back)
   n_iterations: 7
-  gaussian_sxy: 3
-  bilateral_sxy: 60
-  bilateral_srgb: 13
+  gaussian_sxy: 3; bilateral_sxy: 60; bilateral_srgb: 13
+  gaussian_compat: 3; bilateral_compat: 10
   taxonomy_aware_compat: true
+  superpixel_method: slic; superpixel_n_segments: 400
+
+smoothing:              # taxonomy-aware coarse-grid smoothing (flip fix)
+  enabled: false; n_iter: 2; weight: 1.0; connectivity: 8
+
+hierarchy:              # hierarchical consistency (experimental)
+  enabled: false; decision_depth: 2; shallow_leaf: keep
 
 level:
-  target: leaf          # "leaf" (default, most detailed) | integer depth to coarsen
-                        # e.g. 2 = biotic/abiotic, 3 = metal/rock/.../wood, etc.
-  shallow_leaf: keep    # leaves shallower than a requested depth keep their own label
+  target: leaf          # "leaf" (default) | integer depth to coarsen
+  shallow_leaf: keep
 
 objects:
-  bg_threshold: 0.5     # below -> background/unknown (class 0)
-  connectivity: 8
-  min_object_area: 64   # pixels
-  morph_close: false    # gap bridging NOT requested; off
+  bg_threshold: 0.0     # 0 = argmax everywhere; raise to gate low-confidence px
+  connectivity: 8; min_object_area: 64; morph_close: false
 
 output:
-  write_color_viz: true
-  write_instance_pngs: false
-  minc_crosswalk: null  # optional path to Matador->MINC mapping
+  write_color_viz: true; write_instance_pngs: false; minc_crosswalk: null
 ```
+
+Key CLI overrides on `scripts/segment_image.py`: `--sampler`, `--window-size`, `--stride`,
+`--min-patches`, `--max-patches`, `--scales`, `--smooth`/`--smooth-iters`/`--smooth-weight`,
+`--hierarchical`/`--decision-depth`, `--bg-threshold`, `--level`, `--compare-levels`,
+`--viz`, `--stub`, `--device`.
 
 ---
 
-## 8. Data shapes & contracts (quick reference)
+## 8. Data shapes (quick reference)
 
 | Symbol | Shape | Meaning |
 |---|---|---|
-| image | `(H, W, 3)` uint8 | input |
-| patches | `N × (224,224,3)` | grid tiles (`N = gh*gw`) |
-| `P_grid` | `(gh, gw, 37)` | per-cell leaf softmax |
+| `P_grid` | `(gh, gw, 37)` | per-cell leaf softmax (averaged over scales if multi-scale) |
 | `P_dense` | `(H, W, 37)` | bilinear-upsampled leaf probs |
-| CRF out | `(H, W, 37)` | refined leaf probs |
-| `A` | `(37, K_d)` | leaf→frontier aggregation (0/1, row-stochastic) |
-| `F` | `(H, W, K_d)` | frontier probs at depth `d` |
-| `L` | `(H, W)` int | semantic label map (`0`=bg, `1..K_d`) |
-| instances | list | `{id, material, mask(H,W), bbox, area, score, rle}` |
+| refined | `(H, W, 37)` | CRF (+ optional hierarchy) refined leaf probs |
+| `A` | `(37, K)` | leaf→frontier aggregation (0/1) |
+| `F` | `(H, W, K)` | frontier probs at chosen level |
+| `L` | `(H, W)` int | semantic label map (`1..K`, `0`=bg only if threshold>0) |
 
 ---
 
-## 9. Evaluation (comparability to SAM-on-MINC)
+## 9. Evaluation
 
-- **Semantic metrics** at a chosen level vs a ground-truth label map: pixel accuracy,
-  **mean class accuracy**, and **mean IoU** (MINC reports mean class accuracy). Computed
-  with background ignored or as its own class (configurable).
-- **Instance metrics** (where instance GT exists): mask AP / mean-best-IoU against
-  reference instances. Note MINC GT is *semantic*, not instance, so instance comparison
-  against SAM is mostly qualitative unless instance GT is constructed.
-- `scripts/eval_segmentation.py` (implemented) consumes our per-image output dirs
-  (`label_map.png` + `labels.json`) and a GT directory (+ a GT legend, optional name
-  crosswalk), aligns the two id spaces by material name, and prints/writes the metrics
-  table plus an optional normalized confusion heatmap.
-- `segmentation/visualize.py` (implemented) renders semantic + instance overlays and a
-  composite panel (`input | materials | objects [| ground truth]`) for qualitative review;
-  exposed via `segment_image.py --viz PATH`.
-- Until the trained checkpoints are pulled off the compute node, `segment_image.py --stub`
-  runs the full pipeline with a checkpoint-free stub classifier so the plumbing, outputs,
-  and visuals can be validated immediately (predicted materials are meaningless).
+**Class-agnostic mask similarity is the primary metric** (`segmentation/metrics.py`,
+`scripts/compare_masks.py`). The goal is "do our masks match MINC's masks?", **independent
+of label identity** — so we compare the two segmentations purely as **partitions of the
+pixels**: Adjusted Rand Index, Variation of Information, Segmentation Covering (both
+directions), mean best-IoU, and boundary-F1. `--connected` compares spatial regions
+(instance-like) rather than label classes. This is the right lens because the classifier's
+labels are unreliable (Section 5.6) but spatially *consistent* labels still yield masks
+that match MINC even when the material name is "wrong."
+
+Also available:
+- **Semantic metrics** (`scripts/eval_segmentation.py`): pixel acc, mean class acc, mIoU,
+  confusion matrix vs a GT label map, aligning id spaces by material name (+ optional
+  crosswalk). Useful only if/when label correctness matters.
+- **Visualization** (`segmentation/visualize.py`): semantic/instance overlays, composite
+  `input | materials | objects` panel, and multi-level comparison; via `--viz`.
+- **Diagnostics** (`scripts/patch_diagnostic.py`): per-patch prediction montage to separate
+  *classifier* quality from *merging* quality.
 
 ---
 
-## 10. Dependencies (additions)
+## 10. Dependencies
 
 | Package | Use | Notes |
 |---|---|---|
-| `pydensecrf` | dense CRF | unmaintained; document install (`pip install git+https://github.com/lucasb-eyer/pydensecrf.git`); fallback provided |
-| `pycocotools` | RLE instance encode/decode | standard COCO/SAM format |
-| `scikit-image` | connected components, superpixels, morphology | already in `requirements.txt` |
-| `opencv-python` (optional) | fast resize / morphology | optional; torch/skimage cover defaults |
+| `torch`, `torch_geometric`, `timm` | HGNN inference | `timm` is the CNN backbone; PyG needs CUDA (or CPU) — **MPS unsupported** |
+| `scikit-image` | superpixel CRF, morphology | the working CRF backend in practice |
+| `scipy` | connected components, smoothing convolution | |
+| `pyyaml`, `pillow`, `numpy`, `networkx`, `matplotlib`, `tqdm` | config, IO, viz, progress | |
+| `pydensecrf` | dense CRF | **optional; fails to build on Py3.13** — superpixel fallback used |
+| `pycocotools` | — | **not needed**; RLE implemented natively in `formats.py` |
 
-`numpy`, `torch`, `networkx`, `pillow` already present. `requirements.txt` to be updated
-when implementation starts.
+**Runtime / device.** `torch_geometric`'s scatter ops crash on Apple **MPS**
+(`Placeholder storage has not been allocated`), so `device` defaults to **cpu** locally; the
+**CUDA compute node** (where checkpoints live) is the place for fast / large / multi-scale
+runs.
 
 ---
 
 ## 11. Edge cases & decisions
 
-- **Ragged tree / default leaf detail:** the default `"leaf"` frontier keeps all 37 leaves
-  distinct (including `generic_metal`). Coarsening goes shallower (`d ≤ 4`), where every
-  leaf has a clean depth-`d` ancestor, so no folding ambiguity arises; unit-tested across
-  depths 1–4. (`d = 5` would just keep `generic_metal` as itself.)
-- **Liquid/gas:** Matador-C1 only contains `solid`; those branches never appear. Depth-1
-  cut effectively yields a single `solid` class (plus background) — documented, not a bug.
-- **Image-size invariance:** reflect-pad to a multiple of `patch_size`; crop outputs back
-  to original `H×W` before export.
-- **Renormalization:** after bilinear upsampling and after taxonomy aggregation, re-project
-  onto the simplex so thresholds/CRF unaries stay valid.
-- **Determinism:** fixed palette + sorted class ids so label PNGs are reproducible.
-- **CRF absent:** auto-fallback to `superpixel` (or `none`) with a logged warning, so the
-  pipeline never hard-fails on a missing native dependency.
-- **Coarse grid blockiness:** acknowledged; CRF + (optional later) overlap/multi-scale are
-  the levers. Grid is the requested default.
+- **Argmax default, optional background:** `bg_threshold=0.0` labels every pixel (best for
+  MINC mask comparison); raising it reinstates `background/unknown`.
+- **Image-size invariance:** reflect-pad to fit windows; outputs cropped back to `H×W`.
+- **Patch-count bounds** prevent huge images from exploding (and tiny ones from
+  under-sampling); `max_patches` is a hard cap.
+- **Renormalize** onto the simplex after every probability-space op (upsample, smoothing,
+  aggregation, hierarchy masking).
+- **Determinism:** fixed palette + sorted class ids → reproducible label PNGs.
+- **CRF/MPS/pydensecrf** failures degrade gracefully (fallback backend, cpu device) rather
+  than hard-failing.
 
 ---
 
-## 12. Implementation milestones
+## 12. Known limitations & future work
 
-1. **Scaffolding & config** — `segmentation/` package, `SegmentationConfig`,
-   `configs/segmentation.yaml`. (No model calls yet.)
-2. **Patch → classify → upsample** — `patches.py`, `classify.py`, `upsample.py`; verify
-   `P_dense` on a real image; visualize argmax (pre-CRF) sanity map.
-3. **Taxonomy cut** — `taxonomy_cut.py` + `test_taxonomy_cut.py` (leaf default = identity,
-   frontier sets, `A` row-sums = 1). Validate `"leaf"` plus coarsening depths 1–4.
-4. **CRF** — `crf.py` with dense backend + superpixel/none fallbacks; before/after viz.
-5. **Objects & export** — `objects.py`, `formats.py`; MINC label map + COCO instances;
-   round-trip tests.
-6. **Pipeline + CLI** — `pipeline.py` (`MaterialMerger`, caching, `recut`),
-   `scripts/segment_image.py`; end-to-end smoke test.
-7. **Evaluation (optional)** — `scripts/eval_segmentation.py`, mIoU/mean-class-acc,
-   optional Matador→MINC crosswalk for direct baseline comparison.
-8. **Tuning** — CRF params, `bg_threshold`, `min_object_area`; decide if multi-scale
-   sampling is needed for scene-domain accuracy.
-
----
-
-## 13. Open / deferred items (not blocking)
-
-- Whether to enable **multi-scale sliding window** by default (depends on observed
-  scene-domain leaf accuracy vs the 224 close-up training regime).
-- Exact **Matador→MINC 23-category crosswalk** (only needed for numeric comparison on MINC
-  images).
-- Whether `background/unknown` should be **ignored** vs **scored** in evaluation.
-- Optional **instance GT construction** if instance-level comparison to SAM is desired.
+- **Classifier domain gap is the dominant error source**, not the merging algorithm. The
+  per-patch diagnostic confirms low-confidence, spatially-inconsistent predictions on scene
+  tiles. The real fix is classifier-side (fine-tune / domain-adapt on scene patches); the
+  Section 5.6 levers are inference-time mitigations.
+- **Dense CRF** is currently unavailable on the node (Py3.13); a native NumPy mean-field /
+  joint-bilateral implementation would restore taxonomy-aware dense refinement without the
+  `pydensecrf` build.
+- **Matador→MINC crosswalk** is only needed for *semantic* comparison; the class-agnostic
+  mask metrics sidestep it.
+- **Checkpoint selection** (`avg_init` vs `rand_init`) should be confirmed against
+  validation `metrics.json` on the node.
 ```

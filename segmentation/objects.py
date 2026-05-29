@@ -37,20 +37,24 @@ class Instance:
 
 def build_label_map(
     frontier_probs: np.ndarray,
-    bg_threshold: float = 0.5,
+    bg_threshold: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Argmax a ``(H, W, K)`` frontier map into a ``(H, W)`` label map.
 
-    Returns ``(label_map, confidence)`` where ``label_map`` has ``0`` for
-    background/unknown and ``1..K`` for materials, and ``confidence`` is the per-pixel max
-    class probability.
+    Returns ``(label_map, confidence)`` where ``label_map`` has ``1..K`` for materials and
+    ``0`` for background/unknown, and ``confidence`` is the per-pixel max class probability.
+
+    With the default ``bg_threshold == 0.0`` no pixel is ever sent to background: every
+    pixel simply takes its highest-probability label. A positive threshold reinstates the
+    background/unknown class for pixels whose top probability falls below it.
     """
     if frontier_probs.ndim != 3:
         raise ValueError(f"expected (H, W, K), got {frontier_probs.shape}")
     conf = frontier_probs.max(axis=-1)
     arg = frontier_probs.argmax(axis=-1).astype(np.int32)
     label_map = arg + 1  # shift so material ids start at 1
-    label_map[conf < bg_threshold] = BACKGROUND_ID
+    if bg_threshold > 0.0:
+        label_map[conf < bg_threshold] = BACKGROUND_ID
     return label_map.astype(np.int32), conf.astype(np.float32)
 
 

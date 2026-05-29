@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 
 @dataclass
@@ -25,7 +25,11 @@ class SamplingConfig:
     # sliding-window only:
     window_size: int = 96  # crop size in image pixels (resized to patch_size for model)
     stride: Optional[int] = 48  # window spacing; smaller -> finer/denser/slower
-    scales: List[float] = field(default_factory=lambda: [1.0])
+    # Optional patch-count bounds (sliding only). When set, the stride is adapted per image
+    # so the total patch count stays in [min_patches, max_patches] regardless of image size
+    # (prevents huge images from exploding patch counts, and tiny ones from under-sampling).
+    min_patches: Optional[int] = None
+    max_patches: Optional[int] = None
 
 
 @dataclass
@@ -67,7 +71,10 @@ class LevelConfig:
 class ObjectsConfig:
     """Label-map thresholding and connected-component object extraction."""
 
-    bg_threshold: float = 0.5  # max-prob below this -> background/unknown (class 0)
+    # max-prob below this -> background/unknown (class 0).
+    # Default 0.0 = never background: every pixel takes its highest-probability label.
+    # Raise it (e.g. 0.5) to send low-confidence pixels to the background class instead.
+    bg_threshold: float = 0.0
     connectivity: int = 8  # 4 or 8
     min_object_area: int = 64  # drop components smaller than this many pixels
     morph_close: bool = False  # bridge small gaps before connected components (off by default)

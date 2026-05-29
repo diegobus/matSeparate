@@ -11,6 +11,8 @@ sampling:
   stride: 48            # sliding: window spacing; smaller -> finer/denser/slower
   pad_mode: reflect
   batch_size: 32
+  min_patches: null     # sliding: if set, stride auto-adapts so patches >= this per image
+  max_patches: null     # sliding: if set, stride auto-adapts so patches <= this per image
 
 upsample:
   mode: bilinear
@@ -35,7 +37,7 @@ level:
   shallow_leaf: keep    # leaves shallower than a requested depth keep their own label
 
 objects:
-  bg_threshold: 0.5     # max class prob below this -> background/unknown (class 0)
+  bg_threshold: 0.0     # 0 = argmax everywhere (no background); raise to gate low-confidence px
   connectivity: 8       # 4 or 8
   min_object_area: 64   # pixels
   morph_close: false    # gap bridging across occlusions (off; pure connectivity)

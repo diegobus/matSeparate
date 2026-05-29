@@ -1,0 +1,52 @@
+experiment_name: minc_hgnn_baseline
+
+data:
+  dataset_class: MINCDataset
+  manifest_csv: data/processed/minc/manifest.csv
+  train_split: data/processed/minc/splits/train.csv
+  val_split: data/processed/minc/splits/val.csv
+  test_split: data/processed/minc/splits/test.csv
+  taxonomy_json: taxonomy/assets/minc-taxonomy.json
+  node_index: data/processed/minc/node_index.json
+  images_root: data/external/minc/minc-2500
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+model:
+  cnn_backbone: resnet50
+  cnn_pretrained: true
+  cnn_output_dim: 1024
+  cnn_checkpoint: null
+  gnn_input_dim: 1024
+  gnn_hidden_dim: 512
+  gnn_output_dim: 256
+  gnn_layers: 2
+  gnn_heads: 1
+  dropout: 0.1
+  complete_graph: false
+  skip_connection: true
+  expected_leaves: 23
+
+prototypes:
+  init: random
+  allow_random_fallback: true
+  sync_projection: false
+  allow_projection_mismatch: false
+
+graph:
+  bidirectional_global_edges: true
+
+training:
+  image_size: 224
+  batch_size: 32
+  num_epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 5.0e-4
+  num_workers: 4
+  device: auto
+  seed: 42
+  loss: greedy_loss
+
+logging:
+  runs_dir: runs
+  log_interval: 5

@@ -1,0 +1,68 @@
+{
+  "name": "root",
+  "children": [
+    {
+      "name": "natural",
+      "children": [
+        {
+          "name": "biological",
+          "children": [
+            {"name": "foliage"},
+            {"name": "food"},
+            {"name": "hair"},
+            {"name": "skin"},
+            {"name": "wood"}
+          ]
+        },
+        {
+          "name": "environmental",
+          "children": [
+            {"name": "sky"},
+            {"name": "stone"},
+            {"name": "polishedstone"},
+            {"name": "water"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "manufactured",
+      "children": [
+        {
+          "name": "textile",
+          "children": [
+            {"name": "carpet"},
+            {"name": "fabric"},
+            {"name": "wallpaper"}
+          ]
+        },
+        {
+          "name": "construction",
+          "children": [
+            {"name": "brick"},
+            {"name": "ceramic"},
+            {"name": "painted"},
+            {"name": "tile"}
+          ]
+        },
+        {
+          "name": "industrial",
+          "children": [
+            {"name": "glass"},
+            {"name": "metal"},
+            {"name": "mirror"},
+            {"name": "paper"},
+            {"name": "plastic"}
+          ]
+        },
+        {
+          "name": "organic_derived",
+          "children": [
+            {"name": "leather"},
+            {"name": "other"}
+          ]
+        }
+      ]
+    }
+  ]
+}

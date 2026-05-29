@@ -209,11 +209,13 @@ def _init_prototypes(model, idx_to_node, config):
     print(f"Prototype init: loaded cnn_average from {artifact_path}")
 
 
-def _get_leaf_indices(graph, node_to_idx) -> torch.Tensor:
+def _get_leaf_indices(graph, node_to_idx, expected_leaves=None) -> torch.Tensor:
     """Return sorted tensor of leaf node indices (out_degree == 0)."""
-    import networkx as nx
     leaves = [node for node in graph.nodes() if graph.out_degree(node) == 0]
-    assert len(leaves) == 37, f"Expected 37 leaf nodes, got {len(leaves)}: {leaves}"
+    if expected_leaves is not None:
+        assert len(leaves) == expected_leaves, (
+            f"Expected {expected_leaves} leaf nodes, got {len(leaves)}: {leaves}"
+        )
     leaf_indices = sorted([node_to_idx[node] for node in leaves])
     return torch.tensor(leaf_indices, dtype=torch.long)
 
@@ -486,7 +488,8 @@ def main():
     graph = get_taxonomy(config["data"]["taxonomy_json"])
     graph = _canonicalize_graph(graph, idx_to_node)
     hierarchy_levels = _compute_hierarchy_levels(graph, node_to_idx)
-    leaf_indices = _get_leaf_indices(graph, node_to_idx).to(device)
+    expected_leaves = config.get("model", {}).get("expected_leaves", None)
+    leaf_indices = _get_leaf_indices(graph, node_to_idx, expected_leaves).to(device)
     print(f"Hierarchy levels: {len(hierarchy_levels)}")
     for i, level in enumerate(hierarchy_levels):
         print(f"  Level {i}: {len(level)} nodes")
@@ -533,21 +536,30 @@ def main():
     # ----------------------------------------------------------------------- #
     # Datasets
     # ----------------------------------------------------------------------- #
-    extracted_root = config["data"].get("extracted_root")
-    appearance_tar = config["data"].get("appearance_tar")
-    if extracted_root:
-        appearance_tar = None
+    dataset_class_name = config["data"].get("dataset_class", "MatadorC1Dataset")
+    if dataset_class_name == "MINCDataset":
+        from datasets.minc import MINCDataset
+        base_ds = MINCDataset(
+            manifest_csv=config["data"]["manifest_csv"],
+            taxonomy_json=config["data"]["taxonomy_json"],
+            images_root=config["data"]["images_root"],
+            node_index_json=config["data"]["node_index"],
+        )
     else:
-        extracted_root = None
-
-    base_ds = MatadorC1Dataset(
-        manifest_csv=config["data"]["manifest_csv"],
-        taxonomy_json=config["data"]["taxonomy_json"],
-        appearance_tar=appearance_tar or None,
-        extracted_root=extracted_root or None,
-        node_index_json=config["data"]["node_index"],
-        transform=None,
-    )
+        extracted_root = config["data"].get("extracted_root")
+        appearance_tar = config["data"].get("appearance_tar")
+        if extracted_root:
+            appearance_tar = None
+        else:
+            extracted_root = None
+        base_ds = MatadorC1Dataset(
+            manifest_csv=config["data"]["manifest_csv"],
+            taxonomy_json=config["data"]["taxonomy_json"],
+            appearance_tar=appearance_tar or None,
+            extracted_root=extracted_root or None,
+            node_index_json=config["data"]["node_index"],
+            transform=None,
+        )
 
     train_rows = _load_split_rows(Path(config["data"]["train_split"]))
     val_rows = _load_split_rows(Path(config["data"]["val_split"]))

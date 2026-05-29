@@ -195,6 +195,20 @@ def hierarchy_level_accuracy(logits: torch.Tensor, target_multihot: torch.Tensor
     return correct / total if total > 0 else 0.0
 
 
+def _patch_bidirectional_global_edges(model):
+    """Add taxonomy→global reverse edges to edge_index_global_context buffer."""
+    old = model.edge_index_global_context
+    num_nodes = model.num_nodes
+    dev = old.device
+    reverse = torch.stack([
+        torch.arange(1, num_nodes + 1, dtype=torch.long, device=dev),
+        torch.zeros(num_nodes, dtype=torch.long, device=dev),
+    ], dim=0)
+    new = torch.cat([old, reverse], dim=1)
+    model.edge_index_global_context = new
+    print(f"Graph: patched bidirectional global edges ({old.shape[1]} → {new.shape[1]} edges)")
+
+
 def _ensure_2d_logits(logits: torch.Tensor, batch_size: int) -> torch.Tensor:
     if logits.dim() == 1:
         return logits.unsqueeze(0)
@@ -249,9 +263,11 @@ def main():
             "output_dim": config["model"]["gnn_output_dim"],
             "num_layers": config["model"]["gnn_layers"],
             "num_heads": config["model"]["gnn_heads"],
-            "skip_connection": False,
+            "skip_connection": config["model"].get("skip_connection", True),
         },
     )
+    if config.get("graph", {}).get("bidirectional_global_edges", False):
+        _patch_bidirectional_global_edges(model)
     checkpoint = torch.load(args.run_dir / "checkpoint_best.pt", map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)

@@ -111,6 +111,7 @@ class HGNNInference:
         node_to_idx: Dict[str, int],
         leaf_indices: torch.Tensor,
         hierarchy_levels: List[np.ndarray],
+        graph: nx.DiGraph,
     ):
         self.model = model
         self.device = device
@@ -120,6 +121,7 @@ class HGNNInference:
         self.leaf_indices = leaf_indices.to(device)
         self.hierarchy_levels = hierarchy_levels
         self.num_nodes = len(idx_to_node)
+        self.graph = graph  # canonical NetworkX graph
 
         # Build mapping from leaf index -> leaf name
         self.leaf_names = [self.idx_to_node[i] for i in self.leaf_indices.cpu().tolist()]
@@ -213,6 +215,7 @@ class HGNNInference:
             node_to_idx=node_to_idx,
             leaf_indices=leaf_indices,
             hierarchy_levels=hierarchy_levels,
+            graph=graph,
         )
 
     # ----------------------------------------------------------------------- #
@@ -258,8 +261,6 @@ class HGNNInference:
         adj = self.model.adjacency_matrix  # (num_nodes, num_nodes)
 
         path = []
-        current = 0  # root is index 0? No — root index depends on node ordering.
-        # Map node name to index
         root_idx = self.node_to_idx["root"]
         current = root_idx
         active = True
@@ -279,6 +280,19 @@ class HGNNInference:
             current = next_node
 
         return path
+
+    @torch.inference_mode()
+    def predict_path_from_leaf(self, leaf_idx: int) -> List[Tuple[int, str]]:
+        """
+        Reconstruct the taxonomy path from root to a given leaf node.
+        This ensures the predicted leaf (from softmax over leaves) is connected
+        to the root through the actual taxonomy graph edges.
+
+        Returns list of (node_idx, node_name) along the true taxonomy path.
+        """
+        leaf_name = self.idx_to_node[leaf_idx]
+        path_names = nx.shortest_path(self.graph, source="root", target=leaf_name)
+        return [(self.node_to_idx[name], name) for name in path_names]
 
     # ----------------------------------------------------------------------- #
     # Public API
@@ -332,6 +346,11 @@ class HGNNInference:
             path = self.predict_path(logits)
             result["path_nodes"] = [name for _, name in path]
             result["path_indices"] = [idx for idx, _ in path]
+            # Also compute the path anchored to the softmax leaf
+            path_from_leaf = self.predict_path_from_leaf(pred_leaf_idx)
+            result["path_nodes_from_leaf"] = [name for _, name in path_from_leaf]
+            result["path_indices_from_leaf"] = [idx for idx, _ in path_from_leaf]
+            result["paths_agree"] = result["path_nodes"] == result["path_nodes_from_leaf"]
 
         return result
 
@@ -370,6 +389,10 @@ class HGNNInference:
                 path = self.predict_path(logits[i])
                 res["path_nodes"] = [name for _, name in path]
                 res["path_indices"] = [idx for idx, _ in path]
+                path_from_leaf = self.predict_path_from_leaf(res["leaf_idx"])
+                res["path_nodes_from_leaf"] = [name for _, name in path_from_leaf]
+                res["path_indices_from_leaf"] = [idx for idx, _ in path_from_leaf]
+                res["paths_agree"] = res["path_nodes"] == res["path_nodes_from_leaf"]
             results.append(res)
 
         return results

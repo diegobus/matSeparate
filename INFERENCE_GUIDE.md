@@ -30,10 +30,12 @@ api = HGNNInference.from_run_dir(
 ```python
 result = api.infer("photo.jpg", decode_path=True)
 
-result["leaf_label"]   # "concrete"
-result["leaf_probs"]   # (37,) softmax probabilities
-result["path_nodes"]   # ["root", "solid", "abiotic", "ceramic", "structural", "concrete"]
-result["node_probs"]   # (58,) sigmoid over all taxonomy nodes
+result["leaf_label"]             # "concrete"
+result["leaf_probs"]             # (37,) softmax probabilities
+result["path_nodes"]             # ["root", "solid", "abiotic", "ceramic", "structural", "concrete"]
+result["path_nodes_from_leaf"]   # ["root", "solid", "abiotic", "metal", "non-ferrous", "copper"] — may differ!
+result["node_probs"]             # (58,) sigmoid over all taxonomy nodes
+result["paths_agree"]            # bool — do the two path methods match?
 ```
 
 ### 3. Batch inference
@@ -45,6 +47,20 @@ results = api.infer_batch(["img1.jpg", "img2.jpg"], decode_path=True)
 ---
 
 ## Important Notes
+
+### Two path-decoding strategies are available
+
+When `decode_path=True`, the API returns **two** predicted paths:
+
+1. **`path_nodes`** — greedy level-by-level decode: start at root, at each level pick the child with highest sigmoid probability. This reflects independent per-level decisions.
+
+2. **`path_nodes_from_leaf`** — anchored to the softmax leaf: take the leaf with highest softmax probability over all 37 leaves, then reconstruct the true taxonomy path from root to that leaf via the graph edges.
+
+These can differ because:
+- The greedy decoder can wander down a branch where no individual level has the highest softmax leaf, but locally each step looks plausible.
+- The leaf-anchored path guarantees the final node matches `leaf_label`, but the intermediate nodes come from the fixed taxonomy graph, not the model's per-level preferences.
+
+Use `paths_agree` to check if they match. If they frequently disagree, your model may be uncertain about intermediate hierarchy levels.
 
 ### ResNet50 checkpoints are NOT supported by this API
 

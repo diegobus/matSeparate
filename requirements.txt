@@ -12,3 +12,6 @@ tifffile>=2025.2
 scikit-image>=0.25
 matplotlib>=3.10
 pandas>=2.2
+scipy>=1.15
+tqdm>=4.67
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git

@@ -178,7 +178,7 @@ def load_ablation_variant(run_dir: Path, device: torch.device):
     Returns (model, is_hgnn, leaf_indices).
     """
     from scripts.train_ablation_variants import (
-        MLPClassifier, make_random_tree, make_full_graph, canonicalize
+        MLPClassifier, MLPMatchedClassifier, make_random_tree, make_full_graph, canonicalize
     )
     ckpt_path = run_dir / "checkpoint_best.pt"
     cfg       = json.load(open(run_dir / "config.json"))
@@ -190,6 +190,20 @@ def load_ablation_variant(run_dir: Path, device: torch.device):
                               pretrained=False, dropout=cfg["dropout"])
         model.load_state_dict(ckpt["model_state_dict"])
         return model.to(device).eval(), False, None
+
+    if variant == "mlp_matched":
+        # 38-logit MLP; extract leaf logits exactly like CE-trained HGNNs
+        tax_path   = repo_root / "taxonomy/assets/minc-taxonomy.json"
+        g_raw      = get_taxonomy(str(tax_path))
+        node_to_idx = ckpt["node_to_idx"]
+        leaves      = [n for n in g_raw.nodes if g_raw.out_degree(n) == 0]
+        leaf_indices = torch.tensor(sorted([node_to_idx[n] for n in leaves]),
+                                    dtype=torch.long, device=device)
+        model = MLPMatchedClassifier(num_nodes=cfg.get("num_nodes", 38),
+                                     backbone=cfg["backbone"],
+                                     pretrained=False, dropout=cfg["dropout"])
+        model.load_state_dict(ckpt["model_state_dict"])
+        return model.to(device).eval(), True, leaf_indices
 
     # HGNN variant — rebuild the exact graph topology used during training
     tax_path = repo_root / "taxonomy/assets/minc-taxonomy.json"
@@ -336,7 +350,7 @@ def ablation_1_and_2(args, df: pd.DataFrame, transform: T.Compose,
     Ablations 1 & 2: evaluate mlp_head, hgnn_ce, random_tree, full_graph
     on SAM-matched segments (IoU ≥ threshold, masked crop).
     """
-    variants = ["mlp_head", "hgnn_ce", "random_tree", "full_graph"]
+    variants = ["mlp_head", "mlp_matched", "hgnn_ce", "random_tree", "full_graph"]
     abl_dir  = repo_root / args.ablations_dir
     results  = {}
 

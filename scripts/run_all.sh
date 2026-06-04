@@ -95,7 +95,7 @@ fi
 # 5: Graph-structure ablation variants (5 epochs each, fixed budget for comparison)
 # =============================================================================
 
-for VARIANT in mlp_head hgnn_ce random_tree full_graph; do
+for VARIANT in mlp_head mlp_matched hgnn_ce random_tree full_graph; do
     CKPT="$REPO/runs/graph_ablations/$VARIANT/checkpoint_best.pt"
     CFG="$REPO/runs/graph_ablations/$VARIANT/config.json"
     if [ -f "$CKPT" ] && [ -f "$CFG" ]; then

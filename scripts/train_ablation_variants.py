@@ -44,18 +44,17 @@ from datasets.minc import MINC2500Dataset
 from gnn_classifier.hgnn import HGNN, ImageEncoder
 from taxonomy.tree import get_taxonomy
 
-VARIANTS = ["mlp_head", "hgnn_ce", "random_tree", "full_graph"]
+VARIANTS = ["mlp_head", "mlp_matched", "hgnn_ce", "random_tree", "full_graph"]
 
 
 # ── Model definitions ──────────────────────────────────────────────────────────
 
 class MLPClassifier(nn.Module):
     """
-    ResNet50 backbone + 4-layer MLP head.
+    ResNet50 backbone + 4-layer MLP head (~430K non-CNN params).
 
-    Non-CNN parameter count (~430K) is deliberately kept close to the HGNN's
-    GNN head (~616K non-CNN) so we isolate the effect of graph structure rather
-    than parameter count.
+    Output is 23 leaf logits (CE on leaf classes directly).
+    Deliberately smaller than HGNN-CE to show the original ablation 1 gap.
     """
 
     def __init__(self, num_classes: int = 23, backbone: str = "resnet50",
@@ -68,6 +67,37 @@ class MLPClassifier(nn.Module):
             nn.Linear(512, 256), nn.ReLU(inplace=True), nn.Dropout(dropout),
             nn.Linear(256, 128), nn.ReLU(inplace=True), nn.Dropout(dropout),
             nn.Linear(128, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(self.encoder(x))
+
+
+class MLPMatchedClassifier(nn.Module):
+    """
+    Parameter-matched MLP head: same frozen ResNet50 features as HGNN-CE,
+    same 38-node output, same CE-on-leaf-logits training — only difference
+    is MLP instead of GAT message passing.
+
+    Architecture:  512 → 560 → 560 → 38  (~622K non-CNN params ≈ HGNN-CE's 616K)
+    Output:        38 taxonomy-node logits; leaf logits extracted at eval time
+                   identically to HGNN-CE.
+
+    Solves the parameter-count confound in mlp_head vs hgnn_ce: if HGNN-CE
+    still outperforms this model, the gain is attributable to the structured
+    prototype/message-passing mechanism, not extra capacity.
+    """
+
+    def __init__(self, num_nodes: int = 38, backbone: str = "resnet50",
+                 pretrained: bool = True, dropout: float = 0.1,
+                 hidden: int = 560):
+        super().__init__()
+        self.encoder = ImageEncoder(output_dim=512, backbone=backbone,
+                                    pretrained=pretrained, finetune=False)
+        self.head = nn.Sequential(
+            nn.Linear(512, hidden),  nn.ReLU(inplace=True), nn.Dropout(dropout),
+            nn.Linear(hidden, hidden), nn.ReLU(inplace=True), nn.Dropout(dropout),
+            nn.Linear(hidden, num_nodes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -123,7 +153,11 @@ def canonicalize(g: nx.DiGraph) -> nx.DiGraph:
 # ── Training helpers ──────────────────────────────────────────────────────────
 
 def run_epoch(model, loader, leaf_indices, optimizer, device,
-              is_hgnn: bool, train: bool):
+              is_hgnn: bool, train: bool, use_leaf_indices: bool = False):
+    """
+    use_leaf_indices: if True (mlp_matched), extract leaf logits via leaf_indices
+                      even though the model is not a GNN.
+    """
     model.train() if train else model.eval()
     total_loss = correct = n = 0
     ctx = torch.enable_grad() if train else torch.no_grad()
@@ -132,7 +166,7 @@ def run_epoch(model, loader, leaf_indices, optimizer, device,
             imgs   = batch["image"].to(device)
             labels = batch["label"].to(device)
 
-            if is_hgnn:
+            if is_hgnn or use_leaf_indices:
                 logits = model(imgs)
                 if logits.dim() == 1:
                     logits = logits.unsqueeze(0)
@@ -169,6 +203,15 @@ def train_variant(variant: str, args, cfg: dict, taxonomy_g: nx.DiGraph,
         cnn_p   = sum(p.numel() for p in model.encoder.parameters())
         non_cnn = (sum(p.numel() for p in model.parameters()) - cnn_p) / 1e3
         print(f"  MLP non-backbone params: {non_cnn:.0f}K")
+    elif variant == "mlp_matched":
+        # Parameter-matched MLP: 512 → 560 → 560 → 38, same output dim as HGNN-CE
+        num_nodes = taxonomy_g.number_of_nodes()
+        model = MLPMatchedClassifier(num_nodes=num_nodes, backbone=cfg["backbone"],
+                                      pretrained=True, dropout=cfg["dropout"])
+        is_hgnn = False
+        cnn_p   = sum(p.numel() for p in model.encoder.parameters())
+        non_cnn = (sum(p.numel() for p in model.parameters()) - cnn_p) / 1e3
+        print(f"  MLP-matched non-backbone params: {non_cnn:.0f}K")
     else:
         if variant == "hgnn_ce":
             g = taxonomy_g
@@ -215,6 +258,9 @@ def train_variant(variant: str, args, cfg: dict, taxonomy_g: nx.DiGraph,
     val_loader   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, pin_memory=True)
 
+    # mlp_matched outputs 38 logits (like HGNN variants) — needs leaf_indices
+    use_leaf_indices = (variant == "mlp_matched")
+
     # Differential LR: backbone 0.1×, head 1×
     if is_hgnn:
         backbone_params = list(model.cnn.parameters())
@@ -235,9 +281,11 @@ def train_variant(variant: str, args, cfg: dict, taxonomy_g: nx.DiGraph,
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         tr_loss, tr_acc = run_epoch(model, train_loader, leaf_indices, optimizer,
-                                    device, is_hgnn, train=True)
+                                    device, is_hgnn, train=True,
+                                    use_leaf_indices=use_leaf_indices)
         vl_loss, vl_acc = run_epoch(model, val_loader,   leaf_indices, None,
-                                    device, is_hgnn, train=False)
+                                    device, is_hgnn, train=False,
+                                    use_leaf_indices=use_leaf_indices)
         scheduler.step()
         elapsed = time.time() - t0
         print(f"  Epoch {epoch:2d}/{args.epochs} | "

@@ -44,7 +44,7 @@ This masked-crop format is systematically harder than the uniform patches in MIN
 
 | Dataset | Description |
 |---|---|
-| **MINC-2500** | 57,500 labeled material patches, 23 classes, 5-fold CV. Training only. |
+| **MINC-2500** | 57,500 labeled material patches, 23 classes, 5 provided CV folds. Training only; all models trained on fold 1 (48,875 train / 2,875 val / 5,750 test). |
 | **MINC-S** | 1,654 scene photos, 7,061 GT segment masks across 23 classes. Evaluation only. |
 
 **Primary evaluation:** SAM (vit_b, auto mode, ~64 masks/image) is run on 200 MINC-S photos. GT segments with a matching SAM mask (IoU ≥ 0.5) form the primary evaluation set — **751 segments**. Each classifier receives the SAM crop with non-mask pixels → ImageNet mean, matching exact deployment conditions.

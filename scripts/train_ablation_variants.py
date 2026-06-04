@@ -231,6 +231,7 @@ def train_variant(variant: str, args, cfg: dict, taxonomy_g: nx.DiGraph,
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     best_val_acc = 0.0
+    metrics_all = []
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         tr_loss, tr_acc = run_epoch(model, train_loader, leaf_indices, optimizer,
@@ -238,9 +239,15 @@ def train_variant(variant: str, args, cfg: dict, taxonomy_g: nx.DiGraph,
         vl_loss, vl_acc = run_epoch(model, val_loader,   leaf_indices, None,
                                     device, is_hgnn, train=False)
         scheduler.step()
+        elapsed = time.time() - t0
         print(f"  Epoch {epoch:2d}/{args.epochs} | "
               f"train loss={tr_loss:.4f} acc={tr_acc:.4f} | "
-              f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | {time.time()-t0:.0f}s")
+              f"val loss={vl_loss:.4f} acc={vl_acc:.4f} | {elapsed:.0f}s")
+
+        metrics_all.append({"epoch": epoch, "train_loss": tr_loss, "train_acc": tr_acc,
+                             "val_loss": vl_loss, "val_acc": vl_acc, "time_sec": elapsed})
+        with open(run_dir / "metrics.json", "w") as f:
+            json.dump(metrics_all, f, indent=2)
 
         if vl_acc > best_val_acc:
             best_val_acc = vl_acc

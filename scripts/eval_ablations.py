@@ -313,10 +313,19 @@ def load_segment_data(df: pd.DataFrame) -> tuple:
 
 def compute_metrics(preds: np.ndarray, gts: np.ndarray) -> dict:
     n = len(preds)
-    acc    = float((preds == gts).mean())
-    chd    = float(np.mean([TREE_DIST[gts[i], preds[i]] for i in range(n)]))
+    acc     = float((preds == gts).mean())
+    chd     = float(np.mean([TREE_DIST[gts[i], preds[i]] for i in range(n)]))
     hier_d2 = float(np.mean([TREE_DIST[gts[i], preds[i]] <= 2 for i in range(n)]))
-    return {"accuracy": acc, "CHD": chd, "Hier@d2": hier_d2, "n": n}
+
+    per_class = {}
+    for ci, name in enumerate(CATEGORIES):
+        mask = gts == ci
+        if mask.sum() == 0:
+            continue
+        per_class[name] = {"acc": float((preds[mask] == ci).mean()), "n": int(mask.sum())}
+
+    return {"accuracy": acc, "CHD": chd, "Hier@d2": hier_d2, "n": n,
+            "per_class": per_class}
 
 
 # ── Ablation runners ──────────────────────────────────────────────────────────
@@ -438,10 +447,17 @@ def ablation_3(args, df: pd.DataFrame, transform: T.Compose,
             cross  += (~in_parent).sum()
             total  += len(p_sub)
 
+        # Full confusion matrix (NUM_CLASSES × NUM_CLASSES) for plotting
+        conf_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
+        for g, p in zip(gts_arr, preds_arr):
+            conf_matrix[g, p] += 1
+
         results[name] = {
             "within_parent_acc": float(within / total),
             "cross_parent_err":  float(cross / total),
             "per_parent": per_parent,
+            "confusion_matrix": conf_matrix.tolist(),
+            "categories": CATEGORIES,
             "n": total,
         }
         del model; torch.cuda.empty_cache()

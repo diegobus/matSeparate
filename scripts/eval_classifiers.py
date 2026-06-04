@@ -228,10 +228,20 @@ def predict(model, model_type: str, img_tensor: torch.Tensor,
 
 def compute_metrics(preds: np.ndarray, gts: np.ndarray) -> dict:
     n = len(preds)
-    acc    = float((preds == gts).mean())
-    chd    = float(np.mean([TREE_DIST[gts[i], preds[i]] for i in range(n)]))
+    acc     = float((preds == gts).mean())
+    chd     = float(np.mean([TREE_DIST[gts[i], preds[i]] for i in range(n)]))
     hier_d2 = float(np.mean([TREE_DIST[gts[i], preds[i]] <= 2 for i in range(n)]))
-    return {"accuracy": acc, "CHD": chd, "Hier@d2": hier_d2, "n": n}
+
+    # Per-class accuracy for bar/radar plots
+    per_class = {}
+    for ci, name in enumerate(CATEGORIES):
+        mask = gts == ci
+        if mask.sum() == 0:
+            continue
+        per_class[name] = {"acc": float((preds[mask] == ci).mean()), "n": int(mask.sum())}
+
+    return {"accuracy": acc, "CHD": chd, "Hier@d2": hier_d2, "n": n,
+            "per_class": per_class}
 
 
 def print_table(results: dict, title: str):

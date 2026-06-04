@@ -87,11 +87,12 @@ def greedy_loss(
         reduction="none",
     ).mean(dim=1)
 
+    hierarchy_agg = "avg" if mode == "max" else "level_size"
     hierarchy_loss = hierarchical_softmax_loss(
         node_logits,
         labels_multihot,
         hierarchy_levels,
-        agg="level_size",
+        agg=hierarchy_agg,
         reduction="none",
     )
 

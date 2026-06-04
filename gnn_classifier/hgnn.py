@@ -168,19 +168,39 @@ class HGNN(nn.Module):
         graph: nx.DiGraph,
         path_predict: bool = False,
         dropout_prob: float = 0.0,
+        head_type: str = "fixed_global_pool",
         cnn_kwargs: Dict = {},
         gnn_kwargs: Dict = {},
     ):
         super().__init__()
         self.path_predict = path_predict
+        self.head_type = head_type
         self.num_nodes = graph.number_of_nodes()
+        self.node_to_idx = {node: idx for idx, node in enumerate(graph.nodes)}
+        self.idx_to_node = list(graph.nodes)
+        if "root" not in self.node_to_idx:
+            raise ValueError("HGNN graph must contain a 'root' node for path prediction")
+        self.root_idx = self.node_to_idx["root"]
 
         self.cnn = ImageEncoder(**cnn_kwargs)
         self.gnn = GraphBackbone(**gnn_kwargs)
         self.projection = nn.Linear(self.cnn.output_dim, self.gnn.input_dim)
         self.prototypes = nn.Embedding(self.num_nodes, self.gnn.input_dim)
         self.dropout = nn.Dropout(p=dropout_prob)
-        self.classifier = nn.Linear(self.gnn.output_dim, self.num_nodes)
+        if self.head_type == "fixed_global_pool":
+            self.classifier = nn.Linear(self.gnn.output_dim, self.num_nodes)
+        elif self.head_type == "nodewise_shared":
+            self.classifier = nn.Sequential(
+                nn.Linear(self.gnn.output_dim * 3, self.gnn.output_dim),
+                nn.GELU(),
+                nn.Dropout(p=dropout_prob),
+                nn.Linear(self.gnn.output_dim, 1),
+            )
+        else:
+            raise ValueError(
+                f"Unknown HGNN head_type: {self.head_type}. "
+                "Choose from 'fixed_global_pool' or 'nodewise_shared'."
+            )
 
         self._init_graph(graph)
 
@@ -270,10 +290,12 @@ class HGNN(nn.Module):
                 return self._forward(images)
 
     def _forward(self, images: torch.Tensor):
-        batch_size = images.size(0)
         image_features = self.extract_features(images)
+        return self._forward_from_features(image_features)
+
+    def _build_image_label_batch(self, image_features: torch.Tensor):
         data_list = []
-        for i in range(batch_size):
+        for i in range(image_features.size(0)):
             label_embeddings = self.prototypes.weight
             x_subgraph = torch.cat(
                 [image_features[i].unsqueeze(0), label_embeddings], dim=0
@@ -284,7 +306,40 @@ class HGNN(nn.Module):
                     edge_index=self.edge_index_global_context,
                 )
             )
-        data_batch = Batch.from_data_list(data_list)
+        return Batch.from_data_list(data_list)
+
+    def _forward_from_features(self, image_features: torch.Tensor):
+        batch_size = image_features.size(0)
+        data_batch = self._build_image_label_batch(image_features)
+        if self.head_type == "nodewise_shared":
+            node_embeddings = self.gnn(data_batch.x, data_batch.edge_index)
+            node_embeddings = self.dropout(node_embeddings)
+            nodes_per_graph = self.num_nodes + 1
+            graph_starts = torch.arange(
+                batch_size,
+                device=node_embeddings.device,
+                dtype=torch.long,
+            ) * nodes_per_graph
+            global_embeddings = node_embeddings[graph_starts]
+            label_offsets = torch.arange(
+                1,
+                nodes_per_graph,
+                device=node_embeddings.device,
+                dtype=torch.long,
+            )
+            label_embeddings = node_embeddings[
+                graph_starts[:, None] + label_offsets[None, :]
+            ]
+            global_embeddings = global_embeddings[:, None, :].expand_as(label_embeddings)
+            pair_features = torch.cat(
+                [
+                    global_embeddings,
+                    label_embeddings,
+                    global_embeddings * label_embeddings,
+                ],
+                dim=-1,
+            )
+            return self.classifier(pair_features).squeeze(-1)
 
         node_embeddings = self.gnn(
             data_batch.x, data_batch.edge_index, batch=data_batch.batch
@@ -306,17 +361,19 @@ class HGNN(nn.Module):
     def predict(self, images):
         logits = self._forward(images)
         probabilities = F.sigmoid(logits)
-        return self._get_best_path(probabilities)
+        return self._get_best_path(probabilities, start_node=self.root_idx)
 
     @torch.inference_mode()
     def _get_best_path(
         self,
         probabilities: torch.Tensor,
         uncertainties: torch.Tensor = None,
-        start_node: int = 0,
+        start_node: int = None,
         prob_threshold: float = 0.0,
         unc_penalty: float = 0.0,
     ):
+        if start_node is None:
+            start_node = self.root_idx
         batch_size = probabilities.size(0)
         paths = torch.zeros(
             batch_size, self.num_nodes, dtype=torch.float32, device=probabilities.device
@@ -373,12 +430,14 @@ class HGNN(nn.Module):
         self,
         probabilities: torch.Tensor,
         uncertainties: torch.Tensor = None,
-        start_node: int = 0,
+        start_node: int = None,
         prob_threshold: float = 0.0,
         unc_penalty: float = 0.0,
         beam_width: int = 3,
         max_depth: int = None,
     ):
+        if start_node is None:
+            start_node = self.root_idx
         batch_size = probabilities.size(0)
         num_nodes = self.num_nodes
 
@@ -436,3 +495,77 @@ class HGNN(nn.Module):
                 paths_tensor[b, node] = 1
 
         return paths_tensor
+
+
+class GlobalContextHGNN(HGNN):
+    """HGNN variant that builds the image node from local and global views."""
+
+    def __init__(
+        self,
+        graph: nx.DiGraph,
+        path_predict: bool = False,
+        dropout_prob: float = 0.0,
+        head_type: str = "fixed_global_pool",
+        cnn_kwargs: Dict = {},
+        context_cnn_kwargs: Dict | None = None,
+        gnn_kwargs: Dict = {},
+    ):
+        super().__init__(
+            graph=graph,
+            path_predict=path_predict,
+            dropout_prob=dropout_prob,
+            head_type=head_type,
+            cnn_kwargs=cnn_kwargs,
+            gnn_kwargs=gnn_kwargs,
+        )
+        if context_cnn_kwargs is None:
+            context_cnn_kwargs = dict(cnn_kwargs)
+        self.context_cnn = ImageEncoder(**context_cnn_kwargs)
+        if self.context_cnn.output_dim != self.cnn.output_dim:
+            raise ValueError(
+                "GlobalContextHGNN requires local and context encoders to have "
+                f"matching output dims, got {self.cnn.output_dim} and "
+                f"{self.context_cnn.output_dim}."
+            )
+        self.fusion = nn.Sequential(
+            nn.Linear(self.cnn.output_dim * 2, self.cnn.output_dim),
+            nn.GELU(),
+            nn.Dropout(p=dropout_prob),
+        )
+
+    def extract_features(
+        self,
+        images: torch.Tensor,
+        context_images: torch.Tensor | None = None,
+    ):
+        if context_images is None:
+            return super().extract_features(images)
+        local_features = self.cnn(images)
+        context_features = self.context_cnn(context_images)
+        fused_features = self.fusion(torch.cat([local_features, context_features], dim=1))
+        return self.projection(fused_features)
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        context_images: torch.Tensor | None = None,
+    ):
+        if self.training:
+            return self._forward(images, context_images)
+        if self.path_predict:
+            return self.predict(images, context_images)
+        return self._forward(images, context_images)
+
+    def _forward(
+        self,
+        images: torch.Tensor,
+        context_images: torch.Tensor | None = None,
+    ):
+        image_features = self.extract_features(images, context_images)
+        return self._forward_from_features(image_features)
+
+    @torch.inference_mode()
+    def predict(self, images, context_images=None):
+        logits = self._forward(images, context_images)
+        probabilities = F.sigmoid(logits)
+        return self._get_best_path(probabilities, start_node=self.root_idx)

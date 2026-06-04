@@ -1,35 +1,41 @@
-# HGNN baseline for Matador-C1 hierarchical classification
-experiment_name: c1_hgnn_baseline
+# Global-context HGNN for Matador-C1 hierarchical classification.
+experiment_name: c1_global_hgnn_fixed_lr3e-4_wd1e-4_drop0.1_30ep
 
 data:
-  manifest_csv: data/processed/matador_c1/manifest.csv
+  manifest_csv: data/processed/matador_c1/global_manifest.csv
   train_split: data/processed/matador_c1/splits/train.csv
   val_split: data/processed/matador_c1/splits/val.csv
   test_split: data/processed/matador_c1/splits/test.csv
   taxonomy_json: taxonomy/assets/matador-c1-taxonomy.json
   node_index: data/processed/matador_c1/node_index.json
-  extracted_root: data/external/matador
+
+  appearance_extracted_root: data/external/matador
   appearance_tar: null
+  context_extracted_root: data/external/matador
+  context_tar: null
+
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
 
 model:
   cnn_backbone: resnet50
   cnn_pretrained: true
   cnn_output_dim: 1024
-  cnn_checkpoint: null   # path to flat ResNet checkpoint to warm-start backbone
+  context_cnn_backbone: resnet50
+  context_cnn_pretrained: true
+  context_cnn_output_dim: 1024
   gnn_input_dim: 1024
   gnn_hidden_dim: 512
   gnn_output_dim: 256
   gnn_layers: 2
   gnn_heads: 1
   dropout: 0.1
-  head_type: fixed_global_pool  # fixed_global_pool | nodewise_shared
-  complete_graph: false
+  head_type: fixed_global_pool
   skip_connection: true
 
 prototypes:
-  init: cnn_average      # cnn_average | random | model_default
+  init: cnn_average
   path: data/processed/matador_c1/prototypes/hgnn_prototypes.pt
-  allow_random_fallback: true
   sync_projection: true
   allow_projection_mismatch: false
 
@@ -37,17 +43,18 @@ graph:
   bidirectional_global_edges: true
 
 training:
-  image_size: 224
+  local_image_size: 224
+  context_image_size: 224
   batch_size: 16
-  num_epochs: 5
-  learning_rate: 1.0e-4
-  weight_decay: 5.0e-4
+  num_epochs: 30
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
   num_workers: 4
   device: auto
   seed: 1337
-  loss: greedy_loss
-  loss_mode: combined  # max | combined | parent_child_consistency
+  loss_mode: combined
 
 logging:
   runs_dir: runs
-  log_interval: 10
+  log_interval: 1
+  batch_log_interval: 50

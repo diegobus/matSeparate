@@ -34,6 +34,52 @@ from torch.utils.data import Dataset
 from taxonomy.tree import get_taxonomy
 
 
+def _read_image_array_from_bytes(data: bytes, path: str):
+    suffix = Path(path).suffix.lower()
+    buf = io.BytesIO(data)
+    if suffix in {".tif", ".tiff"}:
+        return tifffile.imread(buf)
+    with Image.open(buf) as img:
+        return np.asarray(img.convert("RGB"))
+
+
+def _read_image_array_from_path(path: Path):
+    suffix = path.suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        return tifffile.imread(str(path))
+    with Image.open(path) as img:
+        return np.asarray(img.convert("RGB"))
+
+
+def _normalize_image_array(arr) -> torch.Tensor:
+    """Normalize a numpy image array to float32 CHW tensor in [0, 1]."""
+    # Handle shape / channel variations
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, axis=-1)  # H,W -> H,W,3
+    elif arr.ndim == 3:
+        if arr.shape[0] in (1, 3, 4) and arr.shape[1] == arr.shape[2]:
+            # Possible CHW format
+            arr = arr.transpose(1, 2, 0)
+        if arr.shape[-1] == 4:
+            arr = arr[..., :3]
+        elif arr.shape[-1] == 1:
+            arr = np.repeat(arr, 3, axis=-1)
+    else:
+        raise ValueError(f"Unexpected image ndim={arr.ndim}, shape={arr.shape}")
+
+    # Normalize to [0, 1] float32
+    if arr.dtype == np.uint16:
+        arr = arr.astype(np.float32) / 65535.0
+    elif arr.dtype == np.uint8:
+        arr = arr.astype(np.float32) / 255.0
+    else:
+        arr = arr.astype(np.float32)
+        if arr.max() > 1.0:
+            arr = arr / 65535.0
+
+    return torch.from_numpy(arr).permute(2, 0, 1)
+
+
 class MatadorC1Dataset(Dataset):
     def __init__(
         self,
@@ -125,38 +171,12 @@ class MatadorC1Dataset(Dataset):
             f = self._tar.extractfile(member)
             if f is None:
                 raise ValueError(f"Cannot extract tar member: {image_path}")
-            buf = io.BytesIO(f.read())
-            arr = tifffile.imread(buf)
+            arr = _read_image_array_from_bytes(f.read(), image_path)
         else:
             full_path = self.extracted_root / image_path
-            arr = tifffile.imread(str(full_path))
+            arr = _read_image_array_from_path(full_path)
 
-        # Handle shape / channel variations
-        if arr.ndim == 2:
-            arr = np.stack([arr] * 3, axis=-1)  # H,W -> H,W,3
-        elif arr.ndim == 3:
-            if arr.shape[0] in (1, 3, 4) and arr.shape[1] == arr.shape[2]:
-                # Possible CHW format
-                arr = arr.transpose(1, 2, 0)
-            if arr.shape[-1] == 4:
-                arr = arr[..., :3]
-            elif arr.shape[-1] == 1:
-                arr = np.repeat(arr, 3, axis=-1)
-        else:
-            raise ValueError(f"Unexpected image ndim={arr.ndim}, shape={arr.shape}")
-
-        # Normalize to [0, 1] float32
-        if arr.dtype == np.uint16:
-            arr = arr.astype(np.float32) / 65535.0
-        elif arr.dtype == np.uint8:
-            arr = arr.astype(np.float32) / 255.0
-        else:
-            arr = arr.astype(np.float32)
-            if arr.max() > 1.0:
-                arr = arr / 65535.0
-
-        # CHW tensor
-        tensor = torch.from_numpy(arr).permute(2, 0, 1)  # HWC -> CHW
+        tensor = _normalize_image_array(arr)
 
         if self.transform:
             tensor = self.transform(tensor)
@@ -212,3 +232,85 @@ class MatadorC1Dataset(Dataset):
     def __del__(self):
         if self._tar is not None:
             self._tar.close()
+
+
+class MatadorC1GlobalDataset(MatadorC1Dataset):
+    """Matador-C1 dataset that returns paired local appearance and global context images."""
+
+    def __init__(
+        self,
+        manifest_csv: Union[str, Path],
+        taxonomy_json: Union[str, Path],
+        appearance_tar: Optional[Union[str, Path]] = None,
+        extracted_root: Optional[Union[str, Path]] = None,
+        context_tar: Optional[Union[str, Path]] = None,
+        context_extracted_root: Optional[Union[str, Path]] = None,
+        node_index_json: Optional[Union[str, Path]] = None,
+        transform=None,
+        context_transform=None,
+    ):
+        if context_tar is None and context_extracted_root is None:
+            raise ValueError("Must provide either context_tar or context_extracted_root")
+        if context_tar is not None and context_extracted_root is not None:
+            raise ValueError("Provide only one of context_tar or context_extracted_root")
+
+        self.context_tar = Path(context_tar) if context_tar else None
+        self.context_extracted_root = Path(context_extracted_root) if context_extracted_root else None
+        self.context_transform = context_transform
+        self._context_tar = None
+
+        super().__init__(
+            manifest_csv=manifest_csv,
+            taxonomy_json=taxonomy_json,
+            appearance_tar=appearance_tar,
+            extracted_root=extracted_root,
+            node_index_json=node_index_json,
+            transform=transform,
+        )
+
+        missing_context = [s["sample_id"] for s in self.samples if not s.get("context_path")]
+        if missing_context:
+            preview = ", ".join(missing_context[:5])
+            raise ValueError(f"Manifest rows missing context_path, e.g. {preview}")
+
+        if self.context_tar:
+            self._context_tar = tarfile.open(self.context_tar, "r:*")
+
+    def _load_context_image(self, context_path: str) -> torch.Tensor:
+        if self._context_tar is not None:
+            member = self._context_tar.getmember(context_path)
+            f = self._context_tar.extractfile(member)
+            if f is None:
+                raise ValueError(f"Cannot extract tar member: {context_path}")
+            arr = _read_image_array_from_bytes(f.read(), context_path)
+        else:
+            full_path = self.context_extracted_root / context_path
+            arr = _read_image_array_from_path(full_path)
+
+        tensor = _normalize_image_array(arr)
+        if self.context_transform:
+            tensor = self.context_transform(tensor)
+        return tensor
+
+    def __getitem__(self, idx: int) -> Dict:
+        sample = super().__getitem__(idx)
+        context_path = self.samples[idx]["context_path"]
+        sample["local_image"] = sample["image"]
+        sample["context_image"] = self._load_context_image(context_path)
+        sample["context_path"] = context_path
+        return sample
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_context_tar"] = None
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        if self.context_tar is not None:
+            self._context_tar = tarfile.open(self.context_tar, "r:*")
+
+    def __del__(self):
+        super().__del__()
+        if getattr(self, "_context_tar", None) is not None:
+            self._context_tar.close()

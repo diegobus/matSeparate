@@ -21,6 +21,7 @@ import torch.nn as nn
 import torchvision.transforms as T
 import yaml
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root))
@@ -261,10 +262,13 @@ def main():
         config["model"]["backbone"],
         pretrained=config["model"]["pretrained"],
         num_classes=num_classes,
+        drop_rate=config["model"].get("drop_rate", 0.0),
     )
     model = model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(
+        label_smoothing=config["training"].get("label_smoothing", 0.0),
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config["training"]["learning_rate"],
@@ -319,6 +323,7 @@ def main():
     metrics_log = []
     num_epochs = config["training"]["num_epochs"]
     log_interval = config["logging"]["log_interval"]
+    writer = SummaryWriter(log_dir=str(run_dir / "tensorboard"))
 
     for epoch in range(1, num_epochs + 1):
         t0 = time.time()
@@ -334,6 +339,10 @@ def main():
             "val_acc": val_acc,
             "time_sec": elapsed,
         })
+        writer.add_scalar("Loss/train", train_loss, epoch)
+        writer.add_scalar("Loss/val", val_loss, epoch)
+        writer.add_scalar("Accuracy/train", train_acc, epoch)
+        writer.add_scalar("Accuracy/val", val_acc, epoch)
 
         if epoch % log_interval == 0 or epoch == 1:
             print(f"Epoch {epoch:02d}/{num_epochs}  "
@@ -353,9 +362,11 @@ def main():
 
     with open(run_dir / "metrics.json", "w") as f:
         json.dump(metrics_log, f, indent=2)
+    writer.close()
 
     print(f"\nTraining complete. Best val acc: {best_val_acc:.4f}")
     print(f"Artifacts saved to {run_dir}")
+    print(f"TensorBoard logs: tensorboard --logdir={run_dir / 'tensorboard'}")
 
 
 if __name__ == "__main__":

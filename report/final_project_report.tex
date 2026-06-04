@@ -1,0 +1,298 @@
+\documentclass[11pt,twocolumn,letterpaper]{article}
+
+\usepackage{cvpr}
+\usepackage{times}
+\usepackage{epsfig}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage[breaklinks=true,bookmarks=false]{hyperref}
+
+\cvprfinalcopy
+
+\def\cvprPaperID{****}
+\def\httilde{\mbox{\tt\raisebox{-.5ex}{\symbol{126}}}}
+
+\setcounter{page}{1}
+\begin{document}
+
+%%%%%%%%% TITLE
+\title{Hierarchy-Aware Material Segmentation from Local Appearance and Global Context}
+
+\author{Diego Bustamante\\
+{\tt diegobus@stanford.edu}
+\and
+Ryan Catullo\\
+\texttt{rcatullo@stanford.edu}
+\and
+Anna Fisher Lopez\\
+\texttt{afishpez@stanford.edu}
+}
+
+\maketitle
+
+%%%%%%%%% ABSTRACT
+\begin{abstract}
+Material segmentation requires both spatial localization and semantic recognition of surface materials. Generic segmentation models such as Segment Anything (SAM) produce strong region proposals, but do not assign material labels and do not expose predictions at multiple levels of material specificity. We study hierarchy-aware material segmentation using a material taxonomy and compare flat ResNet classifiers against hierarchical graph neural network (HGNN) classifiers under local, masked, and global-context settings. Our results show that HGNN classifiers are most useful when visual evidence is degraded by masking or proposal mismatch: on SAM-matched MINC-S crops, an HGNN improves material classification accuracy over a flat ResNet50 baseline by 7.99 percentage points. However, end-to-end material segmentation remains bottlenecked by proposal quality and patch-to-mask aggregation. On a curated 200-image MINC-S subset, SAM automatic proposals achieve 0.661 mean best IoU, while our current hierarchy-aware segmentation pipeline is faster but substantially weaker in mask quality. These findings suggest that hierarchical material classifiers improve robust semantic recognition, but better region formation is needed before they can replace general-purpose segmentation backbones.
+\end{abstract}
+
+%%%%%%%%% BODY TEXT
+\section{Introduction}
+
+Material understanding is a key component of physically grounded scene interpretation. For downstream graphics, robotics, and simulation applications, it is often not enough to segment object instances: the system must also identify whether a region is wood, carpet, metal, plastic, glass, foliage, or another material. At the same time, different applications require different levels of material specificity. A physics simulation may only need to distinguish broad material groups such as textile, metal, or liquid, while a rendering pipeline may require finer distinctions such as wool, satin, or leather.
+
+Most modern segmentation systems emphasize object masks or generic region proposals rather than material-labeled masks. SAM is a strong zero-shot proposal generator, but it is not material-aware and does not directly provide labels at selectable levels of a material hierarchy \cite{kirillov2023}. Earlier material segmentation systems such as MINC used convolutional patch classifiers and dense CRF refinement to predict material labels over images \cite{bell2015}. These systems establish a useful patch-to-segmentation framework, but they do not directly address hierarchical material prediction.
+
+We study whether hierarchy-aware material classifiers can improve material segmentation, especially under the visual degradation introduced by segmentation proposals. Our central hypothesis is not that a graph model universally beats a flat classifier, but that hierarchical graph-based prediction is useful when local evidence is ambiguous, masked, or incomplete. This is the common setting for SAM-based material segmentation: the proposal crop may remove scene context, include only part of a material region, or impose object-centric boundaries that do not align with material extent.
+
+In this project, we combine three experimental threads. First, we train local and global-context material classifiers on Matador-C1, a material dataset derived from Beveridge \textit{et al.} \cite{beveridge2025}. Second, we evaluate flat and hierarchy-aware classifiers on MINC-2500 and MINC-S crops to measure robustness under masked and proposal-matched conditions. Third, we build and benchmark segmentation pipelines using both SAM proposals and patch-based material prediction. Our results show a clear classifier-level benefit for HGNNs under context loss, but also show that end-to-end segmentation quality remains limited by region proposal and mask aggregation quality.
+
+\section{Related Work}
+
+\paragraph{Material recognition and segmentation.}
+OpenSurfaces introduced a large collection of real-world scenes labeled with both objects and materials \cite{bell13opensurfaces}. The MINC dataset later provided image patches and scene segments for material recognition, and Bell \textit{et al.} proposed a CNN-based material segmentation pipeline using sliding-window classification and dense CRF refinement \cite{bell2015}. Their approach motivates our patch-to-mask pipeline, where local material predictions are aggregated into dense segmentation maps.
+
+\paragraph{Local and global material context.}
+Schwartz \textit{et al.} showed that material recognition benefits from separating local appearance from global object context \cite{schwartz2016}. This is closely related to our global-context experiments: the local crop captures surface texture, while the surrounding image context can disambiguate visually similar materials. We therefore evaluate both local-only classifiers and dual-view classifiers that receive a local material crop and a wider context crop.
+
+\paragraph{Deep residual networks and material classifiers.}
+ResNet50 remains a strong and efficient backbone for image classification \cite{he2016resnet}. We use ResNet50 as the base image encoder in both flat and graph-based classifiers. The flat baseline feeds ResNet features to an MLP classifier, while the HGNN variants use ResNet embeddings as image nodes in a graph over material labels.
+
+\paragraph{Hierarchical material taxonomies.}
+Beveridge \textit{et al.} introduced a hierarchical material taxonomy and associated Matador dataset \cite{beveridge2025}. The taxonomy organizes materials across levels such as phase, state, composition, form, and material identity. We use this taxonomy to support predictions at multiple depths, allowing downstream users to trade label specificity for robustness or efficiency.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\begin{minipage}[c][1.35in][c]{0.95\linewidth}
+    \centering
+    TODO: Insert material taxonomy figure.\\
+    Suggested file: \texttt{images/beveridge\_tree.png}
+    \end{minipage}}
+    \caption{Hierarchical material taxonomy used for hierarchy-aware material classification.}
+    \label{fig:taxonomy}
+\end{figure}
+
+\section{Datasets}
+
+\paragraph{Matador-C1.}
+We use Matador samples from Beveridge \textit{et al.} to train patch-level material classifiers \cite{beveridge2025}. Each sample contains a local appearance crop and a corresponding global context image. After filtering to the C1 taxonomy split used in our experiments, the paired global-context manifest contains 6,614 samples. Our C1 taxonomy contains 58 nodes including the root and 37 leaf classes. We train local-only ResNet and HGNN classifiers on the local appearance crop, and train global-context classifiers using both the local crop and the surrounding context image.
+
+\paragraph{MINC-2500.}
+MINC-2500 contains 57,500 material patches over 23 material categories and is used for classifier ablations under the MINC label space \cite{bell2015}. Partner experiments train flat and HGNN classifiers using five-fold cross-validation and evaluate how the models generalize from curated material patches to real segmented regions in MINC-S.
+
+\paragraph{MINC-S.}
+MINC-S provides material-labeled scene photos and binary segment masks. The full MINC-S test set contains 7,061 binary material segments over 1,798 scene photos. For SAM and segmentation benchmarking, we use a curated subset of 200 available images and 1,067 annotated segments selected for overlap with the Matador taxonomy. This subset is enriched for materials such as wood, paper, carpet, brick, leather, plastic, metal, ceramic, food, and foliage.
+
+\section{Methods}
+
+\subsection{Flat Patch Classifier}
+
+Our flat baseline uses a ResNet50 image encoder followed by an MLP classification head. For Matador-C1, the model predicts the material leaf class. For MINC-2500, the model predicts one of 23 MINC material classes. This baseline tests whether standard discriminative features are sufficient for material classification when the target is a local patch or segment crop.
+
+\subsection{Hierarchical Graph Neural Network}
+
+The HGNN classifier combines a CNN image embedding with a graph over material labels. A ResNet50 backbone maps an input crop to an image feature. The model then constructs a graph containing one image node and one node for each material taxonomy node. Taxonomy node embeddings are initialized from average CNN embeddings over training images and are updated during training. A two-layer graph attention network propagates information between the image node and material nodes. The final graph representation is passed to a classifier that produces logits over taxonomy nodes.
+
+Training uses a hierarchical objective that combines multi-label path prediction with per-level cross-entropy. The path loss encourages the model to activate all nodes along the correct root-to-leaf material path, while the per-level loss encourages correct choices at each hierarchy depth. This allows the model to be evaluated both by leaf accuracy and by hierarchy-aware metrics such as path F1, hierarchy accuracy, and confusional hierarchy distance.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\begin{minipage}[c][1.45in][c]{0.95\linewidth}
+    \centering
+    TODO: Insert HGNN architecture diagram.\\
+    Show ResNet crop encoder, material graph, GAT layers, and hierarchy logits.
+    \end{minipage}}
+    \caption{Hierarchy-aware graph classifier. A local or global-context image embedding is inserted as a graph node and aggregated with material taxonomy nodes using graph attention.}
+    \label{fig:hgnn_architecture}
+\end{figure}
+
+\subsection{Global-Context Classifiers}
+
+Motivated by prior work on local and global material context \cite{schwartz2016}, we also train dual-view classifiers. The global ResNet baseline uses separate ResNet50 encoders for the local appearance crop and global context image, concatenates the two embeddings, and predicts the leaf material class with an MLP. The global HGNN uses separate local and context encoders, fuses their embeddings, and inserts the fused feature as the image node in the HGNN graph.
+
+The global-context runs are designed to test whether surrounding scene information improves classification beyond local material texture alone. At the time of this draft, final corrected global-context ResNet training is pending. Early global-context HGNN checkpoints are available and have been evaluated for segmentation, but final global-context classifier conclusions should be updated after training completes.
+
+\subsection{Segmentation Pipelines}
+
+We evaluate two segmentation directions. The first is a patch-based pipeline inspired by MINC: an image is sampled into sliding windows, each patch is classified, probabilities are upsampled to image resolution, and optional superpixel or CRF refinement produces a dense material map. Connected components of the material label map are then treated as predicted material regions.
+
+The second direction uses SAM as a region proposal generator. SAM automatic mode produces candidate masks for each image. A material classifier then classifies each proposal crop. Pixel-level maps can be formed by assigning each pixel the label from the covering proposal with highest confidence. This pipeline separates localization from material recognition and provides a natural setting to test whether HGNN classifiers are more robust to masked, proposal-derived crops.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\begin{minipage}[c][1.45in][c]{0.95\linewidth}
+    \centering
+    TODO: Insert segmentation pipeline diagram.\\
+    Include both sliding-window pipeline and SAM proposal + classifier pipeline.
+    \end{minipage}}
+    \caption{Material segmentation pipelines evaluated in this project.}
+    \label{fig:pipeline}
+\end{figure}
+
+\section{Experiments and Results}
+
+\subsection{Matador-C1 Patch Classification}
+
+We first evaluate local-only patch classifiers on Matador-C1. The strongest flat ResNet50 MLP reaches 89.83\% validation leaf accuracy. The best fixed-head HGNN reaches 89.12\% validation leaf accuracy after 30 epochs, narrowing but not closing the gap to the flat ResNet. However, the HGNN obtains strong hierarchy-aware metrics, with validation hierarchy accuracy near 95\% and path F1 near 94.6\%.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Model & Best leaf acc. & Best epoch & Notes \\
+\midrule
+ResNet50 MLP & 89.83\% & 9 & Best local-only leaf classifier \\
+HGNN fixed head & 89.12\% & 29 & Best hierarchy-aware patch model \\
+HGNN node-wise & 87.51\% & 22 & Shared node scorer \\
+\bottomrule
+\end{tabular}
+\caption{Matador-C1 local-only patch classification results.}
+\label{tab:matador_patch}
+\end{table}
+
+\begin{figure}[t]
+    \centering
+    \fbox{\begin{minipage}[c][1.45in][c]{0.95\linewidth}
+    \centering
+    TODO: Insert updated patch-classifier curves.\\
+    Suggested files from \texttt{out/patch\_classifier\_report/figures/}:\\
+    \texttt{fig2\_top\_model\_training\_curves.pdf},\\
+    \texttt{fig3\_hgnn\_hierarchy\_metrics.pdf}
+    \end{minipage}}
+    \caption{Patch-classifier training curves. Longer HGNN training improves the fixed-head HGNN but does not surpass the flat ResNet50 MLP on leaf accuracy.}
+    \label{fig:patch_curves}
+\end{figure}
+
+\subsection{HGNN Robustness Under Proposal-Induced Context Loss}
+
+The strongest evidence for the HGNN comes from MINC-based crop classification experiments. On 751 MINC-S ground-truth segments for which SAM produced a matching proposal with IoU at least 0.5, each classifier receives the masked SAM crop. Under this proposal-matched setting, the HGNN improves accuracy over a flat ResNet50 by 7.99 percentage points.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Model & Accuracy & CHD $\downarrow$ & Hier@d2 $\uparrow$ \\
+\midrule
+Flat ResNet50 & 57.92\% & 2.116 & 0.615 \\
+Flat + HierLoss & 58.06\% & 2.115 & 0.622 \\
+MaskDropAugment & 59.79\% & 1.980 & 0.639 \\
+HGNN & \textbf{65.91\%} & \textbf{1.686} & \textbf{0.684} \\
+\bottomrule
+\end{tabular}
+\caption{Classifier performance on SAM-matched masked MINC-S crops. HGNN improves both top-1 accuracy and hierarchy-aware error metrics.}
+\label{tab:sam_matched_classification}
+\end{table}
+
+The pattern is more important than the absolute accuracy. On ground-truth segment crops, HGNN gains are larger when non-segment pixels are masked out and much smaller when the full bounding box is retained. This supports the claim that graph-based hierarchy-aware classifiers help most when visual evidence is degraded by masking or proposal mismatch.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Setting & Flat & HGNN & Gain \\
+\midrule
+SAM-matched masked crops & 57.92\% & 65.91\% & +7.99pp \\
+GT masked crops & 56.82\% & 61.40\% & +4.58pp \\
+GT bbox crops & 63.63\% & 64.03\% & +0.40pp \\
+\bottomrule
+\end{tabular}
+\caption{HGNN gains are largest when context is removed or proposal crops are masked.}
+\label{tab:context_loss_summary}
+\end{table}
+
+A bootstrap analysis over 751 SAM-matched segments gives a 95\% confidence interval of $[+3.7,+9.9]$ percentage points for the HGNN accuracy gain over the flat classifier, and a CHD reduction of 0.359 with 95\% confidence interval $[0.20,0.53]$. This indicates that the classifier-level improvement is statistically robust.
+
+\subsection{Does the Taxonomy Topology Matter?}
+
+One important ablation weakens a naive interpretation of the HGNN result. When the graph topology is replaced by a random tree or fully connected graph, performance remains within approximately one percentage point of the true taxonomy tree. Thus, these experiments do not prove that the hand-designed material taxonomy topology is uniquely responsible for the improvement. A safer interpretation is that graph-mediated prototype nodes and message passing improve robustness, while the exact semantic topology requires further study.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcc}
+\toprule
+Graph topology & MINC-2500 val & GT mask crop acc. \\
+\midrule
+True taxonomy tree & 70.54\% & 53.00\% \\
+Random tree & 70.26\% & 53.79\% \\
+Fully connected & 69.98\% & 53.13\% \\
+\bottomrule
+\end{tabular}
+\caption{Topology ablation. The HGNN mechanism helps, but the exact taxonomy topology is not clearly superior in this experiment.}
+\label{tab:topology_ablation}
+\end{table}
+
+\subsection{SAM Proposal Ceiling}
+
+We evaluate SAM ViT-B automatic proposals as a zero-shot segmentation baseline on the curated MINC-S subset. SAM produces approximately 64 masks per image. For each ground-truth segment, we select the SAM proposal with highest IoU. This is an oracle proposal-quality metric rather than a semantic segmentation metric.
+
+On the 200-image, 1,067-segment subset, SAM automatic proposals reach 0.661 mean best IoU and 70.4\% Recall@0.50, with an average inference time of 4.459 seconds per image. This establishes a strong localization baseline and also a structural ceiling for any SAM-proposal-based material classifier: roughly 30\% of ground-truth material regions are not recovered by SAM at IoU 0.5.
+
+\subsection{End-to-End Segmentation}
+
+Our current patch-based material segmentation pipeline is faster than SAM automatic proposals but substantially weaker in mask quality. The global ResNet and early global HGNN variants both run in approximately 2.2 seconds per image on the curated MINC-S subset, but their mean best IoU remains far below SAM automatic proposals.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & Mean IoU & R@0.50 & Masks/comp. & Sec/img \\
+\midrule
+SAM auto proposals & 0.661 & 0.704 & 63.67 & 4.459 \\
+Global ResNet pipeline & 0.190 & 0.070 & 15.69 & 2.223 \\
+Early global HGNN pipeline & 0.170 & 0.031 & 13.84 & 2.237 \\
+\bottomrule
+\end{tabular}
+\caption{End-to-end segmentation on the curated MINC-S subset. Our current pipelines are faster but do not yet match SAM proposal quality.}
+\label{tab:segmentation_results}
+\end{table}
+
+The early global HGNN checkpoint improves mapped semantic accuracy over the global ResNet pipeline, but its geometric mask metrics are worse. This suggests that the classifier may be more hierarchy-aware, while the current patch-to-mask aggregation method remains the primary bottleneck.
+
+\subsection{Hierarchy-Guided SAM Mask Merging}
+
+We also test whether HGNN predictions can improve SAM proposals by merging adjacent masks that share a parent taxonomy prediction. Across 194 MINC-S photos, hierarchy-guided merging yields modest improvements: Recall@IoU improves from 70.38\% to 71.13\%, classifier accuracy improves from 61.52\% to 61.79\%, and the end-to-end product metric improves from 43.30\% to 43.96\%. These small gains suggest that SAM's main limitation is not only over-segmentation into small pieces; many material regions are missed because SAM proposals are object-centric and do not align with broad material extents such as wall, carpet, or floor.
+
+\section{Discussion}
+
+The main lesson is that hierarchy-aware classifiers are useful, but they do not solve material segmentation alone. At the classifier level, HGNNs improve robustness under masked or proposal-limited crops and reduce hierarchy-distance errors. This supports our original motivation for hierarchical material prediction: even when the leaf material is wrong, a prediction may still be correct at a higher level of the material tree.
+
+However, our end-to-end segmentation results show that region formation is the larger bottleneck. SAM provides strong generic proposals but misses material regions that are not object-like. Sliding-window patch aggregation avoids dependence on SAM but produces weak region boundaries. As a result, better material classifiers do not yet translate into competitive mask IoU.
+
+The global-context experiments remain important but should be interpreted carefully. Early global-context HGNN results are available, but final corrected global-context ResNet training is pending. Once corrected training finishes, we should update the comparison between local-only, global ResNet, and global HGNN classifiers, and rerun the segmentation benchmark using the corrected checkpoint.
+
+\section{Conclusion}
+
+We investigated hierarchy-aware material classification and segmentation using Matador-C1, MINC-2500, and MINC-S. Our results show that HGNN classifiers are most valuable when visual evidence is degraded by masking or SAM proposal mismatch. They improve material crop classification, reduce hierarchy-distance errors, and support prediction at multiple taxonomy depths. At the same time, current end-to-end material segmentation remains limited by mask proposal quality and patch-to-mask aggregation. Future work should focus on stronger region formation, dense material supervision, and better integration of global context with hierarchy-aware classifiers.
+
+\section{Appendices}
+
+\paragraph{A. Additional classifier ablations.}
+TODO: Include MLP-vs-HGNN parameter ablation, within-parent confusion analysis, context-removal table, and bootstrap details.
+
+\paragraph{B. Dense HierSeg experiments.}
+TODO: Include ConvNeXt-FPN dense segmentation results on synthetic 2-by-2 MINC composites. Current result: baseline 49.27\%, HierSeg 50.51\%, suggesting limited benefit from synthetic composite supervision.
+
+\paragraph{C. Qualitative results.}
+TODO: Insert qualitative visualizations for SAM proposals, SAM+HGNN reconciliation, patch-based segmentation, and failure cases.
+
+\section{Contributions and Acknowledgments}
+
+\subsection{Group Contributions}
+TODO: Fill in individual contributions. Suggested structure: Diego: Matador-C1 experiments, global-context models, segmentation benchmarking, report integration. Ryan: MINC-2500 HGNN experiments, SAM crop classification, mask merging and reconciliation. Anna: dataset/taxonomy analysis, report writing, figures, experimental interpretation. Edit as appropriate.
+
+\subsection{GenAI Usage Statement}
+TODO: Fill according to course policy. Suggested text: We used generative AI tools for code assistance, experiment orchestration, debugging, figure drafting, and report editing. All experiments, interpretations, and final claims were reviewed and validated by the authors.
+
+{\small
+\bibliographystyle{ieee}
+\bibliography{egbib}
+}
+
+\end{document}

@@ -12,7 +12,52 @@ Verifies:
 import sys
 from pathlib import Path
 
+import networkx as nx
 import torch
+from gnn_classifier.hgnn import HGNN
+
+
+def test_hgnn_predict_starts_at_named_root():
+    graph = nx.DiGraph()
+    graph.add_node("child_b")
+    graph.add_node("root")
+    graph.add_node("child_a")
+    graph.add_edge("root", "child_a")
+    graph.add_edge("root", "child_b")
+
+    model = HGNN(
+        graph=graph,
+        path_predict=True,
+        cnn_kwargs={"backbone": "resnet18", "pretrained": False, "output_dim": 4},
+        gnn_kwargs={"input_dim": 4, "hidden_dim": 4, "output_dim": 4, "num_layers": 1},
+    )
+    assert model.root_idx == 1
+
+    probs = torch.zeros(2, model.num_nodes)
+    paths = model._get_best_path(probs)
+
+    assert paths[:, model.root_idx].eq(1).all()
+    assert paths[:, 0].eq(0).all()
+
+
+def test_hgnn_nodewise_shared_head_outputs_node_logits():
+    graph = nx.DiGraph()
+    graph.add_edge("root", "child_a")
+    graph.add_edge("root", "child_b")
+
+    model = HGNN(
+        graph=graph,
+        head_type="nodewise_shared",
+        cnn_kwargs={"backbone": "resnet18", "pretrained": False, "output_dim": 4},
+        gnn_kwargs={"input_dim": 4, "hidden_dim": 4, "output_dim": 4, "num_layers": 1},
+    )
+    images = torch.randn(2, 3, 64, 64)
+    logits = model(images)
+    assert logits.shape == (2, graph.number_of_nodes())
+
+    loss = logits.sum()
+    loss.backward()
+    assert model.classifier[-1].weight.grad is not None
 
 repo_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo_root / "scripts"))

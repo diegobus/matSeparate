@@ -513,6 +513,7 @@ def main():
         graph=graph,
         path_predict=False,
         dropout_prob=config["model"]["dropout"],
+        head_type=config["model"].get("head_type", "fixed_global_pool"),
         cnn_kwargs={
             "backbone": config["model"]["cnn_backbone"],
             "pretrained": config["model"]["cnn_pretrained"],

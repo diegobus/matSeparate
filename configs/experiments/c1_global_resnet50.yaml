@@ -1,0 +1,43 @@
+# Dual-encoder Matador-C1 classifier using local appearance and global context.
+experiment_name: c1_global_resnet50
+
+data:
+  manifest_csv: data/processed/matador_c1/global_manifest.csv
+  taxonomy_json: taxonomy/assets/matador-c1-taxonomy.json
+  train_split: data/processed/matador_c1/splits/train.csv
+  val_split: data/processed/matador_c1/splits/val.csv
+  test_split: data/processed/matador_c1/splits/test.csv
+
+  # Local appearance patches.
+  appearance_extracted_root: data/external/matador
+  appearance_tar: null
+
+  # Global context images. Prefer extracted files for training speed.
+  context_extracted_root: data/external/matador
+  context_tar: null
+
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+model:
+  backbone: resnet50
+  pretrained: true
+  hidden_dim: 1024
+  dropout: 0.1
+  local_checkpoint: null
+
+training:
+  local_image_size: 224
+  context_image_size: 224
+  batch_size: 16
+  num_epochs: 15
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  label_smoothing: 0.05
+  num_workers: 4
+  device: auto
+  seed: 1337
+
+logging:
+  log_interval: 1
+  runs_dir: runs

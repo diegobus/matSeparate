@@ -31,7 +31,7 @@ Usage:
 
     # Specific models / SAM dir
     python scripts/eval_classifiers.py --models flat hgnn \\
-        --sam-dir out/sam_eval_top200_matador_auto_vit_b
+        --sam-dir out/sam_eval_all1654_auto_vit_b
 """
 
 import argparse
@@ -343,7 +343,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--models", nargs="+", choices=ALL_MODELS, default=ALL_MODELS)
     p.add_argument("--section", choices=["1", "2", "all"], default="all")
-    p.add_argument("--sam-dir",         default="out/sam_eval_top200_matador_auto_vit_b")
+    p.add_argument("--sam-dir",         default="out/sam_eval_all1654_auto_vit_b")
     p.add_argument("--iou-threshold",   type=float, default=0.5)
     p.add_argument("--gt-csv",          default=None,
                    help="CSV of all GT segments for Section 2 "

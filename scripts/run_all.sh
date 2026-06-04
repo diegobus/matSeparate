@@ -111,7 +111,33 @@ for VARIANT in mlp_head mlp_matched hgnn_ce random_tree full_graph; do
 done
 
 # =============================================================================
-# 6: Evaluate all classifiers on MINC-S
+# 6: SAM proposal recall on all 1,654 MINC-S photos
+# =============================================================================
+
+SAM_OUT="$REPO/out/sam_eval_all1654_auto_vit_b"
+if [ -f "$SAM_OUT/aggregate_metrics.json" ]; then
+    log "SKIP   sam_eval (results exist)"
+else
+    SAM_CACHE_SRC="$REPO/out/sam_eval_top200_matador_auto_vit_b/cache/auto_masks"
+    if [ -d "$SAM_CACHE_SRC" ]; then
+        mkdir -p "$SAM_OUT/cache/auto_masks"
+        ln -sf "$SAM_CACHE_SRC"/*.pkl "$SAM_OUT/cache/auto_masks/" 2>/dev/null || true
+        log "INFO   pre-populated SAM cache with 200 existing masks"
+    fi
+    step "sam_eval" \
+        "$REPO/.venv/bin/python3" -u "$REPO/scripts/evaluate_sam_minc.py" \
+            --dataset-root data/external/minc/minc-s \
+            --sam-checkpoint checkpoints/sam_vit_b_01ec64.pth \
+            --model-type vit_b \
+            --mode auto \
+            --output-dir "$SAM_OUT" \
+            --alignment-strategy resize_photo_to_mask \
+            --cache-auto-masks \
+            --seed 42
+fi
+
+# =============================================================================
+# 7: Evaluate all classifiers on MINC-S
 # =============================================================================
 
 step "eval_classifiers" \
@@ -120,7 +146,7 @@ step "eval_classifiers" \
         --out runs/eval_classifiers.json
 
 # =============================================================================
-# 7: Ablation studies
+# 8: Ablation studies
 # =============================================================================
 
 step "eval_ablations" \

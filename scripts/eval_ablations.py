@@ -637,7 +637,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ablation", nargs="+", type=int, choices=[1, 2, 3, 4, 5],
                    default=[1, 2, 3, 4, 5], help="Which ablations to run")
-    p.add_argument("--sam-dir",        default="out/sam_eval_top200_matador_auto_vit_b")
+    p.add_argument("--sam-dir",        default="out/sam_eval_all1654_auto_vit_b")
     p.add_argument("--iou-threshold",  type=float, default=0.5)
     p.add_argument("--flat-run",       default="runs/minc_flat")
     p.add_argument("--hgnn-run",       default="runs/minc_hgnn")

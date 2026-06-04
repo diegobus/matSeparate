@@ -1,0 +1,100 @@
+{
+  "name": "root",
+  "children": [
+    {
+      "name": "inorganic",
+      "children": [
+        {
+          "name": "mineral",
+          "children": [
+            {
+              "name": "raw_stone",
+              "children": [
+                {"name": "stone"},
+                {"name": "polishedstone"}
+              ]
+            },
+            {
+              "name": "masonry",
+              "children": [
+                {"name": "brick"},
+                {"name": "tile"},
+                {"name": "ceramic"}
+              ]
+            }
+          ]
+        },
+        {
+          "name": "metal"
+        },
+        {
+          "name": "vitreous",
+          "children": [
+            {"name": "glass"},
+            {"name": "mirror"}
+          ]
+        },
+        {
+          "name": "synthetic",
+          "children": [
+            {"name": "plastic"},
+            {"name": "painted"},
+            {"name": "wallpaper"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "organic",
+      "children": [
+        {
+          "name": "textile",
+          "children": [
+            {"name": "fabric"},
+            {"name": "carpet"}
+          ]
+        },
+        {
+          "name": "wood_derived",
+          "children": [
+            {"name": "wood"},
+            {"name": "paper"}
+          ]
+        },
+        {
+          "name": "animal_derived",
+          "children": [
+            {"name": "leather"},
+            {"name": "hair"},
+            {"name": "skin"}
+          ]
+        },
+        {
+          "name": "living",
+          "children": [
+            {"name": "foliage"},
+            {"name": "food"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "amorphous",
+      "children": [
+        {
+          "name": "fluid",
+          "children": [
+            {"name": "water"},
+            {"name": "sky"}
+          ]
+        },
+        {
+          "name": "uncategorized",
+          "children": [
+            {"name": "other"}
+          ]
+        }
+      ]
+    }
+  ]
+}

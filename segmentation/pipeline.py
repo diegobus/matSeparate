@@ -127,6 +127,65 @@ class MaterialMerger:
         graph = cls._load_graph(run_dir, repo_root, get_taxonomy)
         return cls(classifier=classifier, graph=graph, config=config)
 
+    @classmethod
+    def from_global_resnet_run_dir(
+        cls,
+        run_dir: Union[str, Path],
+        taxonomy_json: Union[str, Path],
+        config: Optional[SegmentationConfig] = None,
+        device: str = "auto",
+        context_mode: str = "scaled_window",
+        context_scale: float = 4.0,
+    ) -> "MaterialMerger":
+        import sys
+
+        repo_root = Path(__file__).resolve().parent.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+
+        from scripts.infer_global_resnet_api import GlobalResNetInference
+        from taxonomy.tree import get_taxonomy
+
+        config = config or SegmentationConfig()
+        api = GlobalResNetInference.from_run_dir(run_dir, device=device)
+        classifier = PatchClassifier.from_global_resnet(
+            api,
+            batch_size=config.sampling.batch_size,
+            context_mode=context_mode,
+            context_scale=context_scale,
+        )
+        graph = get_taxonomy(str(taxonomy_json))
+        return cls(classifier=classifier, graph=graph, config=config)
+
+    @classmethod
+    def from_global_hgnn_run_dir(
+        cls,
+        run_dir: Union[str, Path],
+        config: Optional[SegmentationConfig] = None,
+        device: str = "auto",
+        context_mode: str = "scaled_window",
+        context_scale: float = 4.0,
+    ) -> "MaterialMerger":
+        import sys
+
+        repo_root = Path(__file__).resolve().parent.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+
+        from scripts.infer_global_hgnn_api import GlobalHGNNInference
+        from taxonomy.tree import get_taxonomy
+
+        config = config or SegmentationConfig()
+        api = GlobalHGNNInference.from_run_dir(run_dir, device=device)
+        classifier = PatchClassifier.from_global_hgnn(
+            api,
+            batch_size=config.sampling.batch_size,
+            context_mode=context_mode,
+            context_scale=context_scale,
+        )
+        graph = cls._load_graph(run_dir, repo_root, get_taxonomy)
+        return cls(classifier=classifier, graph=graph, config=config)
+
     @staticmethod
     def _load_graph(run_dir, repo_root, get_taxonomy) -> nx.DiGraph:
         import yaml
@@ -158,7 +217,10 @@ class MaterialMerger:
         image_uint8 = load_image_uint8(image)
         h, w = image_uint8.shape[:2]
 
-        p_grid = self.classifier.classify(self.sampler.sample(image_uint8))
+        p_grid = self.classifier.classify(
+            self.sampler.sample(image_uint8),
+            image_context=image_uint8,
+        )
 
         p_dense = upsample_probs(
             p_grid,

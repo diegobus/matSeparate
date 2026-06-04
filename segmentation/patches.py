@@ -29,6 +29,7 @@ class SampleResult:
     grid_shape: Tuple[int, int]  # (gh, gw)
     orig_shape: Tuple[int, int]  # (H, W) of the input image
     padded_shape: Tuple[int, int]  # (Hp, Wp) after padding
+    bounds: Optional[List[Tuple[int, int, int, int]]] = None  # (y0, x0, y1, x1) in padded image
     window_size: int = -1  # effective window (px) actually used (sliding only)
     stride: int = -1  # effective stride (px) actually used (sliding only)
 
@@ -76,12 +77,14 @@ class GridSampler(PatchSampler):
 
         patches = []
         grid_coords = []
+        bounds = []
         for gi in range(gh):
             for gj in range(gw):
                 y0, x0 = gi * p, gj * p
                 tile = padded[y0 : y0 + p, x0 : x0 + p, :]
                 patches.append(tile)
                 grid_coords.append((gi, gj))
+                bounds.append((y0, x0, y0 + p, x0 + p))
 
         patches_arr = np.stack(patches, axis=0) if patches else np.empty((0, p, p, 3))
         return SampleResult(
@@ -90,6 +93,7 @@ class GridSampler(PatchSampler):
             grid_shape=(gh, gw),
             orig_shape=(h, w),
             padded_shape=(hp, wp),
+            bounds=bounds,
         )
 
 
@@ -224,11 +228,12 @@ class SlidingWindowSampler(PatchSampler):
         ws, stride, hp, wp, ys, xs = self._grid(h, w)
         padded = self._pad(image, hp, wp)
 
-        patches, grid_coords = [], []
+        patches, grid_coords, bounds = [], [], []
         for gi, y0 in enumerate(ys):
             for gj, x0 in enumerate(xs):
                 patches.append(padded[y0 : y0 + ws, x0 : x0 + ws, :])
                 grid_coords.append((gi, gj))
+                bounds.append((y0, x0, y0 + ws, x0 + ws))
 
         patches_arr = np.stack(patches, axis=0) if patches else np.empty((0, ws, ws, 3))
         if self.min_patches is not None or self.max_patches is not None:
@@ -242,6 +247,7 @@ class SlidingWindowSampler(PatchSampler):
             grid_shape=(len(ys), len(xs)),
             orig_shape=(h, w),
             padded_shape=(hp, wp),
+            bounds=bounds,
             window_size=ws,
             stride=stride,
         )

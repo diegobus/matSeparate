@@ -76,6 +76,11 @@ def main():
         help="max-prob below this -> background/unknown. Use 0 to label every pixel "
         "(recommended for mask-similarity comparison).",
     )
+    parser.add_argument(
+        "--no-taxonomy-compat",
+        action="store_true",
+        help="disable taxonomy-aware CRF label compatibility (use scalar Potts instead)",
+    )
     parser.add_argument("--viz", type=Path, default=None, help="save a composite panel figure here")
     parser.add_argument(
         "--compare-levels",
@@ -111,6 +116,8 @@ def main():
         config.sampling.max_patches = args.max_patches
     if args.bg_threshold is not None:
         config.objects.bg_threshold = args.bg_threshold
+    if args.no_taxonomy_compat:
+        config.crf.taxonomy_aware_compat = False
 
     if args.stub:
         merger = _build_stub_merger(config)

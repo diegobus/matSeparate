@@ -1,0 +1,49 @@
+# Default configuration for the material segmentation / merging pipeline.
+# See MERGE.md for the design rationale behind each block.
+
+run_dir: runs/c1_hgnn_baseline/avg_init_20260529_004313
+device: cpu            # torch_geometric scatter ops are broken on Apple MPS; use cpu
+
+sampling:
+  type: sliding         # sliding (overlapping, much finer) | grid (coarse, fast)
+  patch_size: 224       # grid tile size (and classifier input size)
+  window_size: 96       # sliding: crop size in image px (resized to 224 for the model)
+  stride: 48            # sliding: window spacing; smaller -> finer/denser/slower
+  pad_mode: reflect
+  batch_size: 32
+  min_patches: null     # sliding: if set, stride auto-adapts so patches >= this per image
+  max_patches: null     # sliding: if set, stride auto-adapts so patches <= this per image
+
+upsample:
+  mode: bilinear
+  align_corners: false
+  renormalize: true
+
+crf:
+  backend: dense        # dense (pydensecrf) | superpixel | none
+  n_iterations: 7
+  gaussian_sxy: 3
+  bilateral_sxy: 60
+  bilateral_srgb: 13
+  gaussian_compat: 3
+  bilateral_compat: 10
+  taxonomy_aware_compat: true
+  superpixel_method: slic
+  superpixel_n_segments: 400
+
+level:
+  target: leaf          # "leaf" (default, most detailed) | integer depth to coarsen
+                        # e.g. 2 = biotic/abiotic, 3 = metal/rock/.../wood, etc.
+  shallow_leaf: keep    # leaves shallower than a requested depth keep their own label
+
+objects:
+  bg_threshold: 0.0     # 0 = argmax everywhere (no background); raise to gate low-confidence px
+  connectivity: 8       # 4 or 8
+  min_object_area: 64   # pixels
+  morph_close: false    # gap bridging across occlusions (off; pure connectivity)
+  morph_close_radius: 2
+
+output:
+  write_color_viz: true
+  write_instance_pngs: false
+  minc_crosswalk: null  # optional path to a Matador->MINC category mapping json

@@ -1,0 +1,18 @@
+{
+  "_comment": "Approximate crosswalk from MINC-2500 material categories (ground truth) to the closest Matador-C1 leaf materials. Used to score the C1 (Matador-trained) classifier on MINC patches: a C1 prediction is counted correct if its predicted leaf is in the accepted list for the patch's true MINC label. Mappings are best-effort and intentionally conservative; MINC categories with no reasonable Matador equivalent are omitted (the eval reports them as 'uncovered'). The MINC-trained classifier does NOT use this file (its labels match the GT directly).",
+  "brick": ["brick"],
+  "carpet": ["carpet"],
+  "ceramic": ["pottery"],
+  "fabric": ["satin", "nylon", "wool", "natural_fiber", "suede"],
+  "foliage": ["foliage", "ivy", "moss", "grass", "plant_litter", "flower"],
+  "food": ["bread", "fruit", "vegetable"],
+  "hair": ["fur"],
+  "leather": ["leather", "suede"],
+  "metal": ["generic_metal", "carbon_fiber"],
+  "paper": ["paper"],
+  "polishedstone": ["marble", "granite"],
+  "stone": ["granite", "limestone", "marble", "shale", "concrete"],
+  "tile": ["pottery"],
+  "wallpaper": ["paper"],
+  "wood": ["timber", "tree_bark"]
+}

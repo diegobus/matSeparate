@@ -47,7 +47,7 @@ This masked-crop format is systematically harder than the uniform patches in MIN
 | **MINC-2500** | 57,500 labeled material patches, 23 classes, 5-fold CV. Training only. |
 | **MINC-S** | 1,654 scene photos, 7,061 GT segment masks across 23 classes. Evaluation only. |
 
-**Primary evaluation:** SAM (vit_b, auto mode, ~64 masks/image) is run on 194 MINC-S photos. GT segments with a matching SAM mask (IoU ≥ 0.5) form the primary evaluation set — **751 segments**. Each classifier receives the SAM crop with non-mask pixels → ImageNet mean, matching exact deployment conditions.
+**Primary evaluation:** SAM (vit_b, auto mode, ~64 masks/image) is run on 200 MINC-S photos. GT segments with a matching SAM mask (IoU ≥ 0.5) form the primary evaluation set — **751 segments**. Each classifier receives the SAM crop with non-mask pixels → ImageNet mean, matching exact deployment conditions.
 
 **Secondary evaluation:** All 6,917 MINC-S GT segment masks, evaluated in both masked-crop and full-bbox modes.
 
@@ -118,7 +118,7 @@ Masking costs all models ~6–7pp. HGNN's margin over flat is much larger on mas
 
 ### SAM Proposal Recall Bottleneck
 
-SAM vit_b auto mode on 194 MINC-S photos:
+SAM vit_b auto mode on 200 MINC-S photos:
 
 | Metric | Value |
 |---|---|
@@ -334,7 +334,7 @@ This pipeline is limited by the SAM recall ceiling. Region-level classification 
 
 ### B. Hierarchy-Guided Mask Merging (Exploratory)
 
-Adjacent SAM masks sharing a predicted parent label are merged and re-classified. 8,818 merge events across 194 photos:
+Adjacent SAM masks sharing a predicted parent label are merged and re-classified. Numbers below are from a preliminary run on an earlier 194-photo subset (not the final 200-photo eval set):
 
 | Metric | Before | After | Δ |
 |---|---|---|---|

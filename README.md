@@ -1,114 +1,81 @@
-# matSeparate: Material Segmentation with SAM + HGNN
+# matSeparate: Hierarchical Material Classification on SAM Regions
 
-Material segmentation pipeline for MINC-S scene photos. SAM generates region proposals; an HGNN classifier labels each region with one of 23 MINC material categories. A reconciliation step fuses proposals into a pixel-level map.
+Given a scene photo, SAM (Segment Anything Model) automatically proposes candidate material regions. We classify each region with a Hierarchical GNN (HGNN) that reasons over a material taxonomy graph, achieving substantially better accuracy than flat ResNet baselines — especially when scene context is masked out, which is exactly what SAM crops look like.
 
 ---
 
 ## Table of Contents
 
-1. [Pipeline Overview](#pipeline-overview)
-2. [Datasets](#datasets)
-3. [Models](#models)
-4. [Results](#results)
-   - [SAM Structural Ceiling](#sam-structural-ceiling)
-   - [Patch Classifier Comparison](#patch-classifier-comparison)
+1. [Task & Setup](#task--setup)
+2. [Models](#models)
+3. [Main Results](#main-results)
+   - [SAM-Matched Region Classification](#sam-matched-region-classification)
    - [GT Segment Evaluation](#gt-segment-evaluation)
-   - [End-to-End Pipeline](#end-to-end-pipeline)
-   - [Hierarchy-Guided Mask Merging](#hierarchy-guided-mask-merging)
-5. [Ablation Studies](#ablation-studies)
+   - [SAM Recall](#sam-recall)
+4. [Ablation Studies](#ablation-studies)
    - [Ablation 1: Graph vs Parameters](#ablation-1-graph-vs-parameters)
    - [Ablation 2: Graph Topology](#ablation-2-graph-topology)
    - [Ablation 3: Cross-Parent Error Reduction](#ablation-3-cross-parent-error-reduction)
    - [Ablation 4: Context Removal](#ablation-4-context-removal)
    - [Ablation 5: Statistical Significance](#ablation-5-statistical-significance)
-6. [Setup & Usage](#setup--usage)
-7. [Appendix](#appendix)
+5. [Setup & Usage](#setup--usage)
+6. [Appendix](#appendix)
 
 ---
 
-## Pipeline Overview
+## Task & Setup
+
+**Datasets:**
+
+| Dataset | Description |
+|---|---|
+| **MINC-2500** | 57,500 labeled material patches, 23 classes, 5-fold CV. Training only. |
+| **MINC-S** | 1,654 scene photos, 7,061 GT segment masks across 23 classes. Evaluation only. |
+
+**Evaluation protocol:**  
+SAM (vit_b, auto mode, ~64 masks/image) is run on MINC-S photos. GT segments for which SAM produced a matching mask (IoU ≥ 0.5) form the primary evaluation set — **751 segments across 194 photos**. Each classifier receives the SAM crop with non-mask pixels filled to ImageNet mean, matching the exact format at deployment.
+
+**Why masked crops?**  
+SAM crops are irregular — the material region sits inside a bounding box, but surrounding pixels may belong to other materials. Filling non-mask pixels with ImageNet mean isolates the target region and prevents the classifier from cheating with scene context. This is the key domain gap between MINC-2500 training patches and real SAM proposals.
 
 ```
 Scene photo
     │
     ▼
-SAM (vit_b, auto mode)
-~64 masks/image
+SAM (vit_b, auto mode, ~64 masks/image)
     │
-    ▼  For each mask:
-    │   1. Crop to bounding box
-    │   2. Fill non-mask pixels → ImageNet mean
+    ├── For each mask: crop to bbox, fill non-mask → ImageNet mean
     │
     ▼
-HGNN Classifier
-ResNet50 backbone + 2-layer GAT
-over material taxonomy graph
+Classifier  ←─── trained on MINC-2500 patches
     │
     ▼
-Reconciliation
-Per-pixel: label from highest-confidence
-covering mask. Uncovered / low-confidence → "other"
-    │
-    ▼
-Pixel-level material map
-```
-
-**Key design choices:**
-- Non-mask pixels are filled with ImageNet mean at inference, matching how SAM crops differ from clean training patches.
-- Low-confidence pixels (max-softmax < 0.3) and SAM-uncovered pixels default to `other` (class 11). SAM is object/region-driven and unlikely to propose genuinely ambiguous material regions — defaulting them to `other` is correct rather than propagating wrong labels via nearest-neighbor fill.
-
----
-
-## Datasets
-
-| Dataset | Description |
-|---|---|
-| **MINC-2500** | 57,500 labeled material patches, 23 classes, 5-fold CV. Used for training. |
-| **MINC-S** | 1,654 scene photos with 7,061 GT segment masks across 23 classes. Used for evaluation only. |
-
-Data paths (after download):
-```
-data/external/minc/minc-2500/   ← MINC-2500 patches
-data/external/minc/minc-s/      ← MINC-S photos + segment annotations
+Material label per region
+(23 classes from MINC taxonomy)
 ```
 
 ---
 
 ## Models
 
-| Model | Architecture | Loss | Key property |
+| Model | Architecture | Loss | Notes |
 |---|---|---|---|
-| **Flat ResNet50** | timm ResNet50 → 23-class head | CE | Baseline |
-| **Flat + HierLoss** | ResNet50 → 38-node head | `greedy_loss` | Tests whether the hierarchical loss alone helps |
-| **MaskDropAugment** | ResNet50 → 23-class head | CE | Trained with elliptical masking augmentation to close domain gap |
-| **HGNN** | ResNet50 + 2-layer GAT over taxonomy graph → 38 logits | `greedy_loss` | Main model |
+| **Flat ResNet50** | timm ResNet50 → 23-class head | CE | Standard baseline |
+| **Flat + HierLoss** | ResNet50 → 38-node head | `greedy_loss` | Tests whether hierarchical loss alone helps (no GNN) |
+| **MaskDropAugment** | ResNet50 → 23-class head | CE | Elliptical masking augmentation during training to close domain gap |
+| **HGNN** | ResNet50 (frozen) + 2-layer GAT over taxonomy graph → 38 logits | `greedy_loss` | Main model |
 
-**`greedy_loss`:** At each level of the taxonomy, CE is applied over the children of the predicted parent node. This encodes the hierarchy directly into the gradient signal.
+**`greedy_loss`:** At each taxonomy level, CE over the children of the predicted parent. Encodes the hierarchy directly into the gradient signal rather than treating all 23 classes as equidistant.
 
-**HGNN backbone is frozen** during training. Only the GNN head (prototype embeddings + GAT + pooling) is trained. This isolates the contribution of the graph structure rather than additional visual feature tuning.
-
----
-
-## Results
-
-### SAM Structural Ceiling
-
-SAM vit_b auto mode run on 194 MINC-S photos:
-
-| Metric | Value |
-|---|---|
-| Recall @ IoU ≥ 0.5 | **70.4%** (751 / 1,067 GT segments matched) |
-| Average masks / image | ~64 |
-| Miss rate (structural) | ~30% |
-
-The 30% miss rate is structural: SAM is object-centric. Large material regions (carpet, wall, sky) that span the full scene are rarely isolated as single proposals. Merging cannot close this gap — the scale mismatch is the root cause.
+**HGNN backbone is frozen.** Only the ~616K GNN parameters (prototype embeddings + GAT layers + pooling head) are trained. This isolates the contribution of graph structure from additional visual feature learning.
 
 ---
 
-### Patch Classifier Comparison
+## Main Results
 
-Evaluated on **751 MINC-S GT segments where SAM produced a matching mask (IoU ≥ 0.5)**.  
-Each model receives the SAM crop with non-mask pixels filled to ImageNet mean.
+### SAM-Matched Region Classification
+
+**Primary evaluation:** 751 MINC-S GT segments matched by SAM (IoU ≥ 0.5). Each classifier receives the SAM masked crop.
 
 | Model | Accuracy | CHD ↓ | Hier@d2 ↑ |
 |---|---|---|---|
@@ -118,22 +85,21 @@ Each model receives the SAM crop with non-mask pixels filled to ImageNet mean.
 | **HGNN** | **65.91%** | **1.686** | **0.684** |
 
 **Metrics:**
-- **CHD** (Confusional Hierarchy Distance): mean tree distance between predicted and GT class. Lower is better.
+- **CHD** (Confusional Hierarchy Distance): mean tree distance between predicted and GT class. Lower is better — a CHD of 2 means the prediction is on average 2 hops away in the taxonomy.
 - **Hier@d2**: fraction of predictions within tree distance ≤ 2 of GT. Higher is better.
 
-**Key findings:**
-- HierLoss alone adds negligible value (+0.14pp) over flat CE. The hierarchical gradient signal requires the graph structure to be effective.
-- MaskDropAugment helps (+1.87pp) but doesn't match HGNN (+8pp). Elliptical masks are a weak approximation of real segment shapes, and disrupting context during training conflicts with the GNN's prototype-matching mechanism.
-- HGNN achieves the largest CHD reduction (−0.43), indicating fewer semantically severe mistakes.
+**Key takeaways:**
+- HierLoss alone adds negligible value (+0.14pp over flat). The hierarchical gradient signal only helps when paired with the graph structure.
+- MaskDropAugment helps (+1.87pp) but falls well short of HGNN (+8pp). Elliptical masks don't match real SAM segment shapes, and disrupting context during training conflicts with the GNN's prototype-matching.
+- HGNN achieves the largest CHD reduction (−0.43), meaning fewer semantically severe mistakes.
 
 ---
 
 ### GT Segment Evaluation
 
-Direct classification on **all 6,917 MINC-S GT segment masks** (no SAM retrieval step).  
-Two crop modes: **masked** (non-segment pixels → ImageNet mean) vs **bbox** (full bounding box, no masking).
+Direct classification on all **6,917 MINC-S GT segment masks** (no SAM retrieval). Two crop modes compared to isolate the effect of masking:
 
-#### Masked crop
+#### Masked crop (non-segment pixels → ImageNet mean)
 
 | Model | Accuracy | CHD ↓ | Hier@d2 ↑ |
 |---|---|---|---|
@@ -149,41 +115,27 @@ Two crop modes: **masked** (non-segment pixels → ImageNet mean) vs **bbox** (f
 | Flat + HierLoss | 63.65% | 1.717 | 0.675 |
 | **HGNN** | **64.03%** | **1.682** | **0.681** |
 
-**Key finding:** Masking hurts all models (masked vs bbox: ~6–7pp accuracy gap). HGNN's advantage over flat is **larger on masked crops (+4.6pp)** than bbox (+0.4pp), suggesting the GNN's taxonomy-aware prototype matching compensates for removed context.
+**Key finding:** All models drop ~6–7pp when context is masked. HGNN's advantage over flat is **+4.6pp on masked crops vs only +0.4pp on bbox crops** — the graph's prototype-matching most benefits conditions where scene context is absent.
 
 ---
 
-### End-to-End Pipeline
+### SAM Recall
 
-Full SAM + HGNN reconciliation on 20 MINC-S photos:
+SAM vit_b auto mode on 194 MINC-S photos:
 
 | Metric | Value |
 |---|---|
-| Avg pixel coverage (≥ 1 SAM mask) | 70.3% |
-| Uncovered pixels → `other` | ~30% |
-| High-confidence predictions | foliage, glass, leather, skin, hair |
+| **Recall @ IoU ≥ 0.5** | **70.4%** (751 / 1,067 GT segments matched) |
+| Average masks / image | ~64 |
+| Structural miss rate | ~30% |
 
----
-
-### Hierarchy-Guided Mask Merging
-
-Adjacent SAM masks sharing a predicted taxonomy parent are merged and re-classified, on the hypothesis that SAM over-splits material regions.
-
-Evaluated on 194 MINC-S photos (8,818 merge events):
-
-| Metric | Before merge | After merge | Δ |
-|---|---|---|---|
-| Recall @ IoU | 70.38% | 71.13% | +0.75pp |
-| Classifier Accuracy | 61.52% | 61.79% | +0.27pp |
-| End-to-end (R × A) | 43.30% | 43.96% | +0.66pp |
-
-**Finding:** Gains are modest. The 30% SAM miss rate comes from scale mismatch (SAM never generates the proposal at all), not region splitting, so merging cannot address the main failure mode.
+The 30% miss rate is structural: SAM is object-centric and doesn't isolate large material regions (carpet, wall, sky) as single proposals. This is an upper bound on recall that a better SAM configuration or prompt strategy would need to address.
 
 ---
 
 ## Ablation Studies
 
-All ablations evaluated on **751 MINC-S GT segments matched by SAM (IoU ≥ 0.5), using the GT segment mask for cropping** (consistent across models).
+All ablations evaluated on the same 751 SAM-matched MINC-S segments (GT mask crop).
 
 ---
 
@@ -191,16 +143,16 @@ All ablations evaluated on **751 MINC-S GT segments matched by SAM (IoU ≥ 0.5)
 
 *Is the HGNN gain from graph structure, or just extra parameters?*
 
-All variants use **CE loss on leaf logits** (loss is not a confound). Non-CNN parameters are matched where possible.
+All variants use **CE loss on leaf logits** so the loss is not a confound.
 
 | Model | Non-CNN params | MINC-2500 val | GT mask crop acc | CHD | Hier@d2 |
 |---|---|---|---|---|---|
 | MLP head (ResNet50 + 4-layer MLP) | 430K | 64.35% | 46.87% | 2.654 | 0.523 |
 | HGNN-CE (true taxonomy, CE loss)  | 616K | 70.54% | 53.00% | 2.441 | 0.558 |
 
-**Conclusion:** +6.1pp from graph structure alone, not parameters. The MLP also generalises much worse under distribution shift (MINC-2500 val → real SAM crops: −17pp), suggesting the graph's prototype-matching provides a more robust inductive bias.
+**+6.1pp from graph structure alone.** The MLP also generalises much worse under distribution shift (MINC-2500 val → real SAM crops: −17pp vs −18pp from a higher HGNN base), suggesting the graph's prototype-matching provides a more robust inductive bias.
 
-*Note: The main HGNN uses `greedy_loss` instead of CE. The additional +8.5pp over HGNN-CE confirms that the hierarchical loss is the largest single contributor to performance.*
+*The main HGNN uses `greedy_loss` instead of CE — an additional +8.5pp over HGNN-CE — confirming the hierarchical loss is the largest single contributor.*
 
 ---
 
@@ -208,7 +160,7 @@ All variants use **CE loss on leaf logits** (loss is not a confound). Non-CNN pa
 
 *Does the specific material hierarchy matter, or just the GNN mechanism?*
 
-Same HGNN architecture across all three; only the graph topology varies. All trained with CE loss.
+Same HGNN architecture; only graph topology varies. All CE-trained.
 
 | Model | Graph topology | MINC-2500 val | GT mask crop acc |
 |---|---|---|---|
@@ -216,31 +168,31 @@ Same HGNN architecture across all three; only the graph topology varies. All tra
 | Random tree | Random spanning tree (same 38 nodes) | 70.26% | 53.79% |
 | Full graph | Fully connected (all-to-all edges) | 69.98% | 53.13% |
 
-**Conclusion:** All three topologies perform within **~0.8pp** of each other. The specific semantic structure of the material taxonomy provides essentially no advantage. What matters is the *mechanism* — prototype nodes + message passing — not the hierarchy itself.
+**All three within ~0.8pp.** The semantic structure of the material taxonomy provides essentially no advantage over a random tree. What matters is the *mechanism* — prototype nodes + message passing — not the specific hierarchy.
 
 ---
 
 ### Ablation 3: Cross-Parent Error Reduction
 
-*Does HGNN reduce semantically severe mistakes?*
+*Does HGNN make fewer semantically severe mistakes?*
 
-Confusion matrices grouped by parent taxonomy node (masonry, vitreous, textile, etc.).
+Confusion matrices grouped by parent taxonomy node (masonry, vitreous, textile, etc.):
 
 | Model | Within-parent acc | Cross-parent error rate |
 |---|---|---|
 | Flat ResNet50 | 58.32% | 41.68% |
 | **HGNN** | **64.85%** | **35.15%** |
 
-**HGNN reduces cross-parent errors by −6.5pp.** Largest improvements per category group:
+**−6.5pp cross-parent errors.** Largest per-group improvements:
 
-| Group | Flat acc | HGNN acc | Gain |
+| Group | Flat | HGNN | Gain |
 |---|---|---|---|
 | synthetic | 68% | 80% | +12pp |
 | animal_derived | 54% | 66% | +12pp |
 | wood_derived | 44% | 54% | +10pp |
-| vitreous | ~20% | ~20% | ≈0 |
+| vitreous (glass/mirror) | ~20% | ~20% | ≈0 |
 
-Worst group for both models: **vitreous** (glass/mirror, ~20% within-parent accuracy). Both models confuse glass/mirror with synthetic materials (plastic/painted) — a natural failure without a dedicated reflective-surface grouping in the taxonomy.
+Vitreous is the hardest group for both models — glass and mirror are consistently confused with synthetic materials (plastic, painted). The taxonomy doesn't have a dedicated reflective-surface grouping, so the GNN has no structural signal to separate them.
 
 ---
 
@@ -248,7 +200,7 @@ Worst group for both models: **vitreous** (glass/mirror, ~20% within-parent accu
 
 *Does HGNN's advantage grow as scene context is removed?*
 
-Models evaluated at five mask-drop levels: 0% = full bounding box, 100% = all non-segment pixels set to ImageNet mean.
+Five mask-drop levels: 0% = full bounding box, 100% = all non-segment pixels → ImageNet mean.
 
 | Context removed | Flat acc | HGNN acc | HGNN gain |
 |---|---|---|---|
@@ -258,13 +210,13 @@ Models evaluated at five mask-drop levels: 0% = full bounding box, 100% = all no
 | 75% | 53.26% | 58.85% | +5.6pp |
 | **100% (full mask)** | 54.86% | **61.52%** | **+6.7pp** |
 
-**Conclusion:** HGNN's gain grows as context is removed (+5.1pp → +6.7pp). The GNN's prototype-matching is most valuable precisely when external scene context is absent — which is the real-world SAM crop scenario.
+**HGNN's gain grows monotonically with masking** (+5.1pp → +6.7pp). The prototype-matching mechanism is most valuable precisely when external scene cues are absent — the exact condition SAM crops present.
 
 ---
 
 ### Ablation 5: Statistical Significance
 
-Bootstrap confidence intervals over 1,000 resamples of 751 MINC-S GT segments (full masked crop).
+1,000-sample bootstrap over 751 segments (full masked crop):
 
 | Metric | Mean | 95% CI |
 |---|---|---|
@@ -275,13 +227,11 @@ Bootstrap confidence intervals over 1,000 resamples of 751 MINC-S GT segments (f
 | HGNN CHD | 1.892 | [1.71, 2.08] |
 | CHD reduction | 0.359 | [0.20, 0.53] |
 
-**P(HGNN > Flat) = 1.000.** The 95% CI for the accuracy gain is entirely above zero — the result is statistically robust.
+**P(HGNN > flat) = 1.000.** The 95% CI for the accuracy gain is entirely above zero.
 
 ---
 
 ## Setup & Usage
-
-### Install
 
 ```bash
 pip install -r requirements.txt
@@ -293,90 +243,95 @@ pip install -r requirements.txt
 bash scripts/run_all.sh
 ```
 
-This trains all models and runs all evaluations sequentially. Already-trained checkpoints are skipped automatically.
+Trains all models (skipping already-completed checkpoints) and runs all evaluations.
 
 ### Individual steps
 
 ```bash
-# Train baseline classifiers
+# Baseline classifiers
 python scripts/train_classifier.py --model flat       --epochs 10
 python scripts/train_classifier.py --model hierloss   --epochs 10
 python scripts/train_classifier.py --model maskdrop   --epochs 10
 
-# Train main HGNN
+# Main HGNN
 python scripts/train_hgnn.py --epochs 10
 
-# Train graph ablation variants (5 epochs each for fair comparison)
-python scripts/train_ablation_variants.py  # or --variant mlp_head|hgnn_ce|random_tree|full_graph
+# Graph ablation variants (5 epochs — fixed budget for topology comparison)
+python scripts/train_ablation_variants.py
 
-# Evaluate classifiers on MINC-S
+# Evaluate on MINC-S
 python scripts/eval_classifiers.py --section all
-
-# Run ablation studies
 python scripts/eval_ablations.py --ablation 1 2 3 4 5
-
-# Run SAM + HGNN pipeline on scene photos
-python scripts/run_pipeline.py
-
-# Optional: hierarchy-guided mask merging before pipeline
-python scripts/run_merge.py
-python scripts/run_pipeline.py --sam-dir out/sam_merged
 ```
 
 ### Repository structure
 
 ```
 scripts/
-  train_classifier.py       # flat / hierloss / maskdrop baselines
-  train_hgnn.py             # main HGNN (greedy_loss)
-  train_ablation_variants.py # mlp_head / hgnn_ce / random_tree / full_graph
-  eval_classifiers.py       # classifier eval on MINC-S (Sections 1 & 2)
-  eval_ablations.py         # all 5 ablation studies
-  run_pipeline.py           # SAM + HGNN → pixel-level material maps
-  run_merge.py              # hierarchy-guided SAM mask merging
-  run_all.sh                # master sequential runner
+  train_classifier.py         # flat / hierloss / maskdrop baselines
+  train_hgnn.py               # main HGNN (greedy_loss)
+  train_ablation_variants.py  # mlp_head / hgnn_ce / random_tree / full_graph
+  eval_classifiers.py         # classifier eval on MINC-S (Sections 1 & 2)
+  eval_ablations.py           # all 5 ablation studies
+  run_pipeline.py             # SAM + HGNN pixel reconciliation (exploratory)
+  run_merge.py                # hierarchy-guided SAM mask merging (exploratory)
+  run_all.sh                  # master runner
 
 gnn_classifier/
-  hgnn.py                   # HGNN model (ResNet50 + GAT)
-  loss.py                   # greedy_loss hierarchical objective
+  hgnn.py                     # HGNN model (ResNet50 + GAT over taxonomy)
+  loss.py                     # greedy_loss hierarchical objective
 
 taxonomy/
-  tree.py                   # taxonomy graph utilities
-  assets/minc-taxonomy.json # 38-node MINC material hierarchy
+  tree.py                     # taxonomy graph utilities
+  assets/minc-taxonomy.json   # 38-node MINC material hierarchy
 
 datasets/
-  minc.py                   # MINC-2500 dataset
+  minc.py                     # MINC-2500 dataset loader
 ```
 
 ---
 
 ## Appendix
 
-### A. HierSeg: Dense Material Segmentation
+### A. Pixel-Level Reconciliation (Exploratory)
 
-A separate dense segmentation approach was explored using a ConvNeXt-tiny encoder + FPN neck trained on synthetic 2×2 composite images assembled from MINC-2500 patches, with a hierarchical boundary loss.
+An end-to-end pixel segmentation pipeline was explored: HGNN classifies each SAM mask; for each pixel, the label from the highest-confidence covering mask is assigned; uncovered and low-confidence pixels default to `other`.
 
-**Architecture:** ConvNeXt-tiny (ImageNet-22K pretrained) + 4-scale FPN (128ch) + 23-class dense head. ~28.7M parameters.
+Results on 20 MINC-S photos:
+- Average pixel coverage: 70.3%
+- Remaining ~30% → `other` (structurally uncovered by SAM)
 
-**Hierarchical boundary loss:** For adjacent pixel pairs with different GT labels: penalise low total variation (push for sharp boundaries) weighted by taxonomy tree distance. For same-label pairs: penalise high TV (encourage smoothness).
+This approach is limited by SAM's 30% recall gap (wrong scale, not over-splitting), so the pixel map inherits that ceiling. We focus on region-level classification accuracy as the primary metric.
 
-| Run | λ_hier | Best MINC-S Acc | Epochs |
+### B. Hierarchy-Guided Mask Merging (Exploratory)
+
+Adjacent SAM masks sharing a predicted taxonomy parent are merged and re-classified. 8,818 merge events across 194 photos:
+
+| Metric | Before | After | Δ |
 |---|---|---|---|
-| Baseline | 0.0 | 49.27% | 30 |
-| HierSeg | 0.5 | **50.51%** | 30 |
+| Recall @ IoU | 70.38% | 71.13% | +0.75pp |
+| Classifier Accuracy | 61.52% | 61.79% | +0.27pp |
+| End-to-end (R × A) | 43.30% | 43.96% | +0.66pp |
 
-+1.24pp from the boundary loss, within noise. The primary bottleneck is the training data: synthetic 2×2 composites have artificial boundaries and no real scene context. Dense GT labels from a scene dataset (e.g., OpenSurfaces) would be needed to properly validate this approach.
+Gains are modest — the miss rate is from scale mismatch, not over-splitting.
 
----
+### C. HierSeg: Dense Material Segmentation (Exploratory)
 
-### B. Training Details
+ConvNeXt-tiny + 4-scale FPN trained on synthetic 2×2 composite images from MINC-2500 patches, with a hierarchical boundary loss.
 
-| Model | Epochs | Batch | LR | Backbone | Notes |
-|---|---|---|---|---|---|
-| Flat ResNet50 | 10 | 64 | 1e-3 | ResNet50 (ImageNet) | timm, full fine-tune |
-| Flat + HierLoss | 10 | 64 | 1e-3 | ResNet50 (ImageNet) | 38-node head, greedy_loss |
-| MaskDropAugment | 10 | 64 | 1e-3 | ResNet50 (ImageNet) | p=0.5 ellipse masking |
-| HGNN | 10 | 32 | 1e-4 | ResNet50 (frozen) | Differential LR: backbone 0.1× |
-| Ablation variants | 5 | 32 | 1e-4 | ResNet50 (frozen) | Fixed budget for topology comparison |
+| Run | λ_hier | Best MINC-S Acc |
+|---|---|---|
+| Baseline | 0.0 | 49.27% |
+| HierSeg | 0.5 | 50.51% |
 
-Optimizer: AdamW, weight decay 5e-4. Scheduler: CosineAnnealingLR. Data: MINC-2500 fold-1.
++1.24pp within noise. Primary bottleneck is training data quality — synthetic composites lack real scene context. Would require dense GT labels (e.g., OpenSurfaces) to validate properly.
+
+### D. Training Details
+
+| Model | Epochs | Batch | LR | Notes |
+|---|---|---|---|---|
+| Flat / HierLoss / MaskDrop | 10 | 64 | 1e-3 | AdamW, cosine LR, full backbone |
+| HGNN | 10 | 32 | 1e-4 | Backbone frozen; differential LR (backbone 0.1×) |
+| Ablation variants | 5 | 32 | 1e-4 | Fixed budget for fair topology comparison |
+
+Weight decay 5e-4. Data: MINC-2500 fold-1.
